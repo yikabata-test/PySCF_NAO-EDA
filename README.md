@@ -140,7 +140,7 @@ $$P' = X^{-1} P X^{-1\dagger},\qquad M' = X^\dagger M X,\qquad
   NAO 0.05，LSO 0.21 hartree で，NAO-EDA は Pople 系基底の間ではほぼ一定 (−74.41 ± 0.02) ですが
   cc-pVXZ 系では −74.34〜−74.56 と変動します。また NAO-EDA は陽イオン的な原子に大きく負の
   エネルギーを与えます (H2O の H: −0.84 hartree; 論文の CO2 でも C に 1.45 hartree 移動)。
-  これらは手法固有の性質で，用途に応じて `orbital_basis='ao'` も検討してください。
+  これらは手法固有の性質です。
 
 ## MP2-EDA
 
