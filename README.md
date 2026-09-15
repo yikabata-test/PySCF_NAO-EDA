@@ -353,6 +353,8 @@ from pyscf_eda import cbs as eda_cbs
 
 mol = gto.M(atom='O 0 0 0; H 0 0.757 0.586; H 0 -0.757 0.586')   # 基底は自動で置き換え
 res = eda_cbs.QTD(mol).kernel()             # または eda_cbs.CompositeEDA(mol, scheme='QDD')
+# SCF/CC の収束判定 (既定値): conv_tol=1e-10, conv_tol_grad=1e-7, newton=True,
+#                             cc_conv_tol=1e-9, cc_conv_tol_normt=1e-7
 print(res.summary())
 print(res.e_corr)      # CBS 極限の原子相関エネルギー
 print(res.e_tot)       # E_HF^A (参照) + E_corr^{CBS,A}
@@ -407,6 +409,24 @@ hfres = eda_cbs.HFCBS(mol, basis_family='cc-pv').kernel()   # RHF/DZ,TZ,QZ + EDA
 print(hfres.summary())          # 全方式の原子 HF/CBS，原子和 − 分子値，alpha_A
 print(hfres.estimates['feller']['atoms'], hfres.estimates['feller_alpha'])
 ```
+
+### 収束判定と勾配の精度
+
+解析勾配の誤差は SCF の軌道勾配の残差の 1 次 (エネルギーの誤差は 2 次) なので，
+勾配の有効桁数を決めるのは `conv_tol` ではなく軌道勾配ノルムの閾値 `conv_tol_grad` です
+(PySCF の既定は √conv_tol ≈ 3e-5 で，勾配の誤差は約 5e-7 hartree/bohr)。
+`CompositeEDA` と `HFCBS` は既定で `conv_tol_grad=1e-7` (勾配の誤差 ~1e-8 hartree/bohr，
+約 8 桁) を用い，CCSD は `cc_conv_tol=1e-9`, `cc_conv_tol_normt=1e-7` (ラムダ方程式にも
+同じ閾値) で解きます。
+
+`newton=True` (既定) では各 SCF を 3 段階で解きます: 短い DIIS の予備収束 → 二次収束
+(Newton, `mf.newton()`) 法で軌道勾配 1e-6 まで → 収束した密度から DIIS で目標の閾値まで
+仕上げ (通常 1〜2 回)。大きな分子で DIIS が数値ノイズの水準で停滞しても Newton 法は
+1e-6 まで確実に収束します (Newton 法の拡張 Hessian は |g| ≲ 1e-7 で精度を失うので，
+最後の桁は DIIS に任せます)。`newton=False` で通常の DIIS のみになります。
+これらの SCF は `pyscf_eda.cbs.run_scf(mol, conv_tol, conv_tol_grad, newton)` として単独でも
+使えます (返り値は通常の `scf.RHF` オブジェクト)。
+
 
 ## 例
 

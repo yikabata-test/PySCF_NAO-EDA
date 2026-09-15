@@ -297,3 +297,36 @@ def test_cbs_gradient_against_finite_difference(h2_qtd_grad):
     fd_f = (ef[h] - ef[-h]) / (2 * h) * B
     assert abs(res_f.grad[1, 2] - fd_f) < 2e-5
     assert 'Gradient of E_QTD(CBS)' in res.summary()
+
+
+def test_run_scf_newton_reaches_tight_thresholds():
+    mol = gto.M(atom='O 0 0 0; H 0 0.757 0.586; H 0 -0.757 0.586', basis='cc-pvdz', verbose=0)
+    ref = scf.RHF(mol)
+    ref.conv_tol, ref.conv_tol_grad = 1e-14, 1e-9
+    ref.run()
+    g_ref = ref.nuc_grad_method().kernel()
+    for newton in (True, False):
+        mf = eda_cbs.run_scf(mol, conv_tol=1e-10, conv_tol_grad=1e-7, newton=newton)
+        assert type(mf) is scf.hf.RHF          # SOSCF wrapper removed
+        assert mf.converged
+        assert mf.conv_tol_grad == 1e-7
+        assert numpy.linalg.norm(mf.get_grad(mf.mo_coeff, mf.mo_occ)) < 1e-7
+        assert abs(mf.e_tot - ref.e_tot) < 1e-11
+        g = mf.nuc_grad_method().kernel()
+        assert abs(g - g_ref).max() < 1e-8
+
+
+def test_composite_newton_option(hf_mol):
+    kw = dict(scheme='QDD', with_grad=True, verbose=0)
+    drv = eda_cbs.CompositeEDA(hf_mol, newton=True, **kw)
+    res_n = drv.kernel()
+    res_d = eda_cbs.CompositeEDA(hf_mol, newton=False, **kw).kernel()
+    assert all(mf.converged for mf in drv.mfs.values())
+    assert all(numpy.linalg.norm(mf.get_grad(mf.mo_coeff, mf.mo_occ)) < 1e-7
+               for mf in drv.mfs.values())
+    assert numpy.allclose(res_n.e_tot, res_d.e_tot, atol=1e-9)
+    assert numpy.allclose(res_n.grad, res_d.grad, atol=1e-8)
+    hf_n = eda_cbs.HFCBS(hf_mol, cardinals=('D', 'T'), newton=True, conv_tol_grad=1e-8,
+                         verbose=0).kernel()
+    hf_d = eda_cbs.HFCBS(hf_mol, cardinals=('D', 'T'), newton=False, verbose=0).kernel()
+    assert numpy.allclose(hf_n.hf_mol['T'], hf_d.hf_mol['T'], atol=1e-9)

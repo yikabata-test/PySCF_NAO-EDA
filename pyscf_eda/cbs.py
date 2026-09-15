@@ -238,6 +238,52 @@ def _hf_cbs_lines(hf_atoms, hf_mol, table, atoms, width, hf_cbs):
     return lines
 
 
+def run_scf(mol, conv_tol=1e-10, conv_tol_grad=1e-7, newton=True, verbose=0):
+    """RHF calculation with the thresholds used by the CBS drivers.
+
+    The analytic gradient error is first order in the residual of the
+    orbital gradient, so ``conv_tol_grad`` (not ``conv_tol``) controls the
+    number of reliable digits of the gradient: 1e-7 gives about 8 decimals.
+
+    With ``newton=True`` the SCF runs in three stages: a short DIIS
+    pre-convergence, the quadratically convergent second-order solver
+    (``mf.newton()``) down to an orbital-gradient norm of 1e-6, and a final
+    DIIS polish from the converged density to the requested thresholds
+    (usually one or two cycles).  The second-order solver reaches 1e-6
+    robustly also for large molecules where DIIS may stall, while its
+    augmented-Hessian step loses precision below ~1e-7 (the eigenvalue of
+    the augmented Hessian scales with |g|^2), which is why the last digits
+    are left to DIIS.  With ``newton=False`` plain DIIS is used.
+
+    The returned object is a plain ``scf.RHF`` (the SOSCF wrapper is
+    removed), usable for MP2/CC and gradients.
+    """
+    mf = scf.RHF(mol)
+    mf.verbose = verbose
+    if newton:
+        mf.conv_tol = 1e-6
+        mf.conv_tol_grad = 1e-3
+        mf.max_cycle = 10
+        mf.verbose = 0                      # a non-converged pre-run is expected
+        mf.kernel()
+        mf_n = mf.newton()
+        mf_n.verbose = verbose
+        mf_n.conv_tol = max(conv_tol, 1e-8)
+        mf_n.conv_tol_grad = max(conv_tol_grad, 1e-6)
+        mf_n.max_cycle = 50
+        mf_n.kernel(mf.mo_coeff, mf.mo_occ)
+        mf = mf_n.undo_soscf()
+        mf.verbose = verbose
+        mf.max_cycle = 50
+        dm0 = mf.make_rdm1()
+    else:
+        dm0 = None
+    mf.conv_tol = conv_tol
+    mf.conv_tol_grad = conv_tol_grad
+    mf.kernel(dm0=dm0)
+    return mf
+
+
 class CBSEDAResult:
     """Atomic energies at the CBS limit from an n-scheme fitting model.
 
@@ -377,8 +423,16 @@ class CompositeEDA(lib.StreamObject):
         docstring); the estimates of all schemes are stored in the result.
     hf_alpha : float
         Exponent of the 'halkier' two-point exponential extrapolation.
-    conv_tol, cc_conv_tol, cc_conv_tol_normt : float
-        Convergence thresholds of the SCF and CCSD calculations.
+    conv_tol, conv_tol_grad : float
+        SCF thresholds on the energy and on the orbital-gradient norm.  The
+        gradient error is first order in the orbital-gradient residual, so
+        ``conv_tol_grad`` (default 1e-7, about 8 reliable decimals of the
+        nuclear gradient) matters more than ``conv_tol``.
+    newton : bool
+        Finish every SCF with the second-order (Newton) solver after a loose
+        DIIS pre-convergence (default True); robust for tight thresholds.
+    cc_conv_tol, cc_conv_tol_normt : float
+        CCSD thresholds on the energy and on the amplitude / lambda norm.
     with_grad : bool
         Also compute the analytic nuclear gradients of every level from the
         same calculations and combine them into the CBS gradient
@@ -387,8 +441,9 @@ class CompositeEDA(lib.StreamObject):
 
     def __init__(self, mol, scheme='QTD', basis_family='cc-pv', frozen='auto',
                  orbital_basis='nao', ne_partition='half', w_occ=1.0, hf_cbs='halkier',
-                 hf_alpha=HALKIER_ALPHA, coeff_family=None, conv_tol=1e-10, cc_conv_tol=1e-9,
-                 cc_conv_tol_normt=1e-7, verbose=None, with_grad=False):
+                 hf_alpha=HALKIER_ALPHA, coeff_family=None, conv_tol=1e-10, conv_tol_grad=1e-7,
+                 newton=True, cc_conv_tol=1e-9, cc_conv_tol_normt=1e-7, verbose=None,
+                 with_grad=False):
         scheme = scheme.upper()
         if scheme not in SCHEMES:
             raise ValueError(f'unknown scheme {scheme}; choose from {tuple(SCHEMES)}')
@@ -418,6 +473,8 @@ class CompositeEDA(lib.StreamObject):
         self.hf_cbs = hf_cbs
         self.hf_alpha = hf_alpha
         self.conv_tol = conv_tol
+        self.conv_tol_grad = conv_tol_grad
+        self.newton = newton
         self.cc_conv_tol = cc_conv_tol
         self.cc_conv_tol_normt = cc_conv_tol_normt
         self.verbose = mol.verbose if verbose is None else verbose
@@ -469,10 +526,7 @@ class CompositeEDA(lib.StreamObject):
             frozen = self._frozen(mol)
             log.info('--- basis %s (%s), highest level %s, frozen=%s, nao=%d',
                      x, self.basis_sets[x], top, frozen, mol.nao)
-            mf = scf.RHF(mol)
-            mf.conv_tol = self.conv_tol
-            mf.verbose = self.verbose
-            mf.kernel()
+            mf = run_scf(mol, self.conv_tol, self.conv_tol_grad, self.newton, self.verbose)
             if not mf.converged:
                 log.warn('SCF with %s did not converge', self.basis_sets[x])
             self.mfs[x] = mf
@@ -601,11 +655,12 @@ class HFCBS(lib.StreamObject):
     cardinals : sequence of cardinal letters to compute (default ('D', 'T', 'Q'))
     orbital_basis, ne_partition : passed to ``pyscf_eda.rhf.EDA``
     alpha : exponent of the 'halkier' scheme
+    conv_tol, conv_tol_grad, newton : SCF thresholds and solver (see ``CompositeEDA``)
     """
 
     def __init__(self, mol, basis_family='cc-pv', cardinals=('D', 'T', 'Q'),
                  orbital_basis='nao', ne_partition='half', alpha=HALKIER_ALPHA,
-                 conv_tol=1e-10, verbose=None):
+                 conv_tol=1e-10, conv_tol_grad=1e-7, newton=True, verbose=None):
         if isinstance(basis_family, dict):
             self.basis_sets = dict(basis_family)
         else:
@@ -616,6 +671,8 @@ class HFCBS(lib.StreamObject):
         self.ne_partition = ne_partition
         self.alpha = alpha
         self.conv_tol = conv_tol
+        self.conv_tol_grad = conv_tol_grad
+        self.newton = newton
         self.verbose = mol.verbose if verbose is None else verbose
         self.stdout = mol.stdout
         self.mfs = {}
@@ -629,10 +686,7 @@ class HFCBS(lib.StreamObject):
             mol.basis = self.basis_sets[x]
             mol.verbose = self.verbose
             mol.build(dump_input=False, parse_arg=False)
-            mf = scf.RHF(mol)
-            mf.conv_tol = self.conv_tol
-            mf.verbose = self.verbose
-            mf.kernel()
+            mf = run_scf(mol, self.conv_tol, self.conv_tol_grad, self.newton, self.verbose)
             if not mf.converged:
                 log.warn('SCF with %s did not converge', self.basis_sets[x])
             self.mfs[x] = mf
