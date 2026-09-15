@@ -72,12 +72,15 @@ $$E_{TOT} = E_{NN} + T_S + E_{Ne} + E_{CLB} + E_X$$
 
 ## 例
 
-* `examples/h2o_rhf_eda.py` – 論文 Table 1 と同じ H2O 構造 (cc-pVDZ) での RHF-EDA
+* `examples/h2o_rhf_eda.py` – 論文 Table 1 と同じ H2O 構造 (cc-pVDZ) での RHF-EDA。
+  孤立原子からの差 (Table 1 の括弧内に相当) は，孤立原子を通常の UHF で計算して求めます
+  (単一原子ではその全エネルギーがそのまま原子エネルギーになるため EDA は不要です)。
 * `examples/h2o_bond_breaking.py` – O–H 結合伸長 (論文 Table 2 に対応) に伴う原子エネルギーの変化
 
 ## 制限事項
 
 * 現在は閉殻 RHF のみ対応しています (UHF/ROHF, KS-DFT は未対応で例外を出します)。
+  検証などで孤立原子のエネルギーが必要な場合は，通常の UHF 計算を用いてください。
   密度フィッティング (`.density_fit()`) や ECP を用いた RHF には対応しています。
 * `mf.get_hcore()` に $T + V_{nuc} (+V_{ECP})$ 以外の一電子項 (外場など) が含まれる場合，
   その寄与は基底関数で分割し `e_other` として報告します。
