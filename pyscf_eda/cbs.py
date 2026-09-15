@@ -44,9 +44,6 @@ D, T, Q basis sets computed along the way are extrapolated with one of
     'halkier'       : two-point (T, Q) E(X) = E_CBS + A exp(-alpha X) with a
                       fixed alpha (default 1.63) [Halkier et al., Chem. Phys.
                       Lett. 302, 437 (1999)]  (default)
-    'feller'        : three-point (D, T, Q) E(X) = E_CBS + A exp(-alpha X)
-                      with alpha fitted, E_CBS = E_Q - (E_Q - E_T)^2 /
-                      (E_Q - 2 E_T + E_D)  [Feller, J. Chem. Phys. 96, 6104 (1992)]
 
 Nuclear gradients
 -----------------
@@ -54,18 +51,17 @@ With ``with_grad=True`` the analytic gradient of every level is computed
 from the same SCF/MP2/CCSD objects (``pyscf_eda.grad``) and combined with
 the same coefficients into the gradient of the CBS energy, dE_CBS/dR
 (``result.grad``, shape (natm, 3)); the HF/CBS part follows the chosen
-``hf_cbs`` scheme (the Feller formula is differentiated exactly).
+``hf_cbs`` scheme.
 
-The two-point schemes are linear in the energies, so the atomic HF
-energies extrapolate consistently (the atomic sum equals the molecular
-extrapolation).  The Feller formula is nonlinear: applied atom by atom it
-does not preserve the sum, and it becomes ill-conditioned whenever an
-atomic HF energy does not decrease monotonically and geometrically with X
-(the fitted exponent alpha_A = ln[(E_T - E_D)/(E_Q - E_T)] is then
-undefined).  Every result therefore reports the estimates of all schemes,
-atomic and molecular, together with the atomic-sum errors and alpha_A, so
-that the numerical stability of atomic HF/CBS energies can be examined
-(see ``HFCBS`` for a standalone HF-only run).
+All schemes are linear in the energies, so the atomic HF energies
+extrapolate consistently: the atomic sum equals the molecular extrapolation
+and every scheme is size-consistent.  (A nonlinear three-point fit of the
+exponent, e.g. Feller's formula, is deliberately not offered: applied atom
+by atom it does not preserve the sum, and it is ill-conditioned whenever
+an atomic HF energy does not converge monotonically with X.)  Every result
+reports the estimates of all schemes, atomic and molecular, and the CBS
+total energies obtained with each of them (see ``HFCBS`` for a
+standalone HF-only run).
 """
 
 import numpy
@@ -125,15 +121,12 @@ def chemical_core(mol):
     return elements.chemcore(mol)
 
 
-HF_CBS_METHODS = ('largest', 'karton-martin', 'halkier', 'feller')
+HF_CBS_METHODS = ('largest', 'karton-martin', 'halkier')
 HALKIER_ALPHA = 1.63
 
 
 def hf_cbs_coefficients(method, cardinals, alpha=HALKIER_ALPHA):
-    """Linear coefficients {X: c_X} of a linear HF CBS estimate.
-
-    Raises ``ValueError`` for the nonlinear 'feller' scheme.
-    """
+    """Linear coefficients {X: c_X} of the HF CBS estimate ``method``."""
     cardinals = sorted(cardinals, key=CARDINAL.get)
     if method == 'largest':
         return {cardinals[-1]: 1.0}
@@ -150,43 +143,16 @@ def hf_cbs_coefficients(method, cardinals, alpha=HALKIER_ALPHA):
             fy = numpy.exp(-alpha * ny)
         denom = fx - fy
         return {y: fx / denom, x: -fy / denom}
-    if method == 'feller':
-        raise ValueError('the Feller three-point extrapolation is nonlinear; '
-                         'use hf_cbs_estimate')
     raise ValueError(f"unknown hf_cbs '{method}'; choose from {HF_CBS_METHODS}")
-
-
-def feller_alpha(energies):
-    """Fitted exponent alpha = ln[(E_T - E_D)/(E_Q - E_T)] of E(X) = E_CBS + A e^{-alpha X}.
-
-    Works element-wise on arrays; nan where the energies are not
-    monotonically and geometrically convergent.
-    """
-    x, y, z = sorted(energies, key=CARDINAL.get)[-3:]
-    num = numpy.asarray(energies[y] - energies[x], dtype=float)
-    den = numpy.asarray(energies[z] - energies[y], dtype=float)
-    with numpy.errstate(divide='ignore', invalid='ignore'):
-        ratio = num / den
-        alpha = numpy.where(ratio > 0, numpy.log(numpy.abs(ratio)), numpy.nan)
-    return alpha
 
 
 def hf_cbs_estimate(method, energies, alpha=HALKIER_ALPHA):
     """CBS estimate of HF energies {X: scalar or per-atom array} with ``method``.
 
-    Returns the estimate (same shape as the inputs).  For 'feller' the
-    formula is applied element-wise, i.e. atom by atom for atomic arrays.
+    Returns the estimate (same shape as the inputs); all schemes are linear
+    in the energies, so atomic arrays extrapolate consistently with the
+    molecular value.
     """
-    if method == 'feller':
-        cards = sorted(energies, key=CARDINAL.get)
-        if len(cards) < 3:
-            raise ValueError('feller HF extrapolation needs three basis sets')
-        x, y, z = cards[-3:]
-        e_x, e_y, e_z = (numpy.asarray(energies[k], dtype=float) for k in (x, y, z))
-        den = e_z - 2.0 * e_y + e_x
-        with numpy.errstate(divide='ignore', invalid='ignore'):
-            est = e_z - (e_z - e_y) ** 2 / den
-        return est
     coeff = hf_cbs_coefficients(method, list(energies), alpha=alpha)
     return sum(c * numpy.asarray(energies[x], dtype=float) for x, c in coeff.items())
 
@@ -194,23 +160,18 @@ def hf_cbs_estimate(method, energies, alpha=HALKIER_ALPHA):
 def hf_cbs_table(hf_atoms, hf_mol, alpha=HALKIER_ALPHA):
     """All HF CBS estimates from {X: atomic arrays} and {X: molecular energies}.
 
-    Returns {method: dict(atoms=array, mol=float, sum_error=float)} plus
-    'feller_alpha' (per-atom fitted exponents, nan if undefined) and
-    'feller_alpha_mol'.
+    Returns {method: dict(atoms=array, mol=float, sum_error=float)}; the
+    sum error (atomic sum minus molecular estimate) is zero up to round-off
+    for every (linear) scheme and is reported as a check.
     """
     table = {}
     n = len(hf_atoms)
     for method in HF_CBS_METHODS:
-        if method == 'feller' and n < 3:
-            continue
         if method in ('karton-martin', 'halkier') and n < 2:
             continue
         atoms = hf_cbs_estimate(method, hf_atoms, alpha)
         mol = float(hf_cbs_estimate(method, hf_mol, alpha))
         table[method] = dict(atoms=atoms, mol=mol, sum_error=float(atoms.sum() - mol))
-    if n >= 3:
-        table['feller_alpha'] = feller_alpha(hf_atoms)
-        table['feller_alpha_mol'] = float(feller_alpha(hf_mol))
     return table
 
 
@@ -229,12 +190,7 @@ def _hf_cbs_lines(hf_atoms, hf_mol, table, atoms, width, hf_cbs):
         mark = ' *' if method == hf_cbs else ''
         lines.append(row(f'HF/CBS {method}{mark}', t['atoms'], t['mol']))
         lines.append(f"{'  sum(atoms) - mol':<20}{t['sum_error']:>{width * (len(atoms) + 1)}.3e}")
-    if 'feller_alpha' in table:
-        alpha = table['feller_alpha']
-        line = f"{'  feller alpha_A':<20}" + ''.join(
-            f"{alpha[ia]:>{width}.4f}" for ia in atoms) + f"{table['feller_alpha_mol']:>{width}.4f}"
-        lines.append(line)
-    lines.append('(* = scheme used for E_HF (ref); nan alpha_A: no monotonic geometric convergence)')
+    lines.append('(* = scheme used for E_HF (ref))')
     return lines
 
 
@@ -330,8 +286,7 @@ class CBSEDAResult:
         self.hf_estimates = hf_cbs_table(hf, hf_mol, alpha=hf_alpha)
         if hf_cbs not in self.hf_estimates:
             raise ValueError(f"hf_cbs '{hf_cbs}' is not available with basis sets {sorted(hf)}")
-        self.hf_coeff = (hf_cbs_coefficients(hf_cbs, list(hf), alpha=hf_alpha)
-                         if hf_cbs != 'feller' else None)
+        self.hf_coeff = hf_cbs_coefficients(hf_cbs, list(hf), alpha=hf_alpha)
         self.e_corr = sum(c * corr[key] for key, c in coeff.items())
         self.e_hf = self.hf_estimates[hf_cbs]['atoms']
         self.e_tot = self.e_hf + self.e_corr
@@ -381,10 +336,7 @@ class CBSEDAResult:
         lines.append('-' * len(header))
         lines += _hf_cbs_lines(self.hf, self.hf_mol, self.hf_estimates, atoms, width, self.hf_cbs)
         lines.append('-' * len(header))
-        if self.hf_coeff is not None:
-            hf_label = ' '.join(f'{c:+.4f} HF[{x}Z]' for x, c in self.hf_coeff.items())
-        else:
-            hf_label = 'Feller three-point extrapolation (nonlinear, atom by atom)'
+        hf_label = ' '.join(f'{c:+.4f} HF[{x}Z]' for x, c in self.hf_coeff.items())
         lines.append(f'HF reference : {self.hf_cbs}: {hf_label}')
         lines.append('CBS fit      : ' + ' '.join(
             f'{c:+.4f} {k[0]}[{k[1]}Z]' for k, c in self.coeff.items()))
@@ -442,7 +394,7 @@ class CompositeEDA(lib.StreamObject):
     orbital_basis, ne_partition, w_occ :
         Passed to the EDA of every level (see ``pyscf_eda.rhf`` /
         ``pyscf_eda.mp2``).
-    hf_cbs : {'halkier', 'karton-martin', 'feller', 'largest'}
+    hf_cbs : {'halkier', 'karton-martin', 'largest'}
         HF CBS estimate used for the total atomic energies (see module
         docstring); the estimates of all schemes are stored in the result.
     hf_alpha : float
@@ -617,8 +569,8 @@ class CompositeEDA(lib.StreamObject):
                                    hf_grads=self.hf_grads if self.with_grad else None)
         diff = self.result.e_tot.sum() - self.result.e_tot_mol
         if abs(diff) > 1e-7:
-            log.warn('Sum of atomic CBS energies differs from the molecular value by %.3e '
-                     '(HF/CBS scheme %s is nonlinear)', diff, self.hf_cbs)
+            log.warn('Sum of atomic CBS energies differs from the molecular value by %.3e',
+                     diff)
         if self.verbose >= logger.INFO:
             log.info('\n%s', self.result.summary())
         return self.result
@@ -633,7 +585,7 @@ class HFCBSResult:
     ----------
     hf        : {X: atomic HF energies}
     hf_mol    : {X: molecular HF energies}
-    estimates : {method: dict(atoms, mol, sum_error)} (+ 'feller_alpha')
+    estimates : {method: dict(atoms, mol, sum_error)}
     eda_results : {X: RHF EDA result}
     """
 

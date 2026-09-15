@@ -156,24 +156,13 @@ def test_hf_cbs_estimate_linear_schemes_are_consistent():
         c = eda_cbs.hf_cbs_coefficients(method, ['D', 'T', 'Q'])
         assert abs(sum(c.values()) - 1.0) < 1e-12
     with pytest.raises(ValueError):
-        eda_cbs.hf_cbs_coefficients('feller', ['D', 'T', 'Q'])
+        eda_cbs.hf_cbs_coefficients('feller', ['D', 'T', 'Q'])      # nonlinear scheme removed
 
 
-def test_feller_formula_and_alpha():
-    # exact exponential series E(X) = E_CBS + A exp(-alpha X) is recovered
+def test_halkier_recovers_exact_exponential_series():
     e_cbs, a, alpha = -100.0, 0.5, 1.3
     e = {x: e_cbs + a * numpy.exp(-alpha * eda_cbs.CARDINAL[x]) for x in ('D', 'T', 'Q')}
-    assert abs(eda_cbs.hf_cbs_estimate('feller', e) - e_cbs) < 1e-10
-    assert abs(eda_cbs.feller_alpha(e) - alpha) < 1e-10
-    # halkier with the exact alpha is exact as well
     assert abs(eda_cbs.hf_cbs_estimate('halkier', e, alpha=alpha) - e_cbs) < 1e-10
-    # non-monotonic sequence: alpha undefined (nan)
-    e_bad = {'D': -1.0, 'T': -1.2, 'Q': -1.1}
-    assert numpy.isnan(eda_cbs.feller_alpha(e_bad))
-    # element-wise on arrays
-    arr = {x: numpy.array([e[x], e_bad[x]]) for x in e}
-    alpha_arr = eda_cbs.feller_alpha(arr)
-    assert abs(alpha_arr[0] - alpha) < 1e-10 and numpy.isnan(alpha_arr[1])
 
 
 @pytest.fixture(scope='module')
@@ -189,35 +178,28 @@ def test_hf_cbs_driver(hf_cbs_result, hf_mol):
         assert abs(res.hf_mol[x] - mf.e_tot) < 1e-8
         assert abs(res.hf[x].sum() - mf.e_tot) < 1e-8
     est = res.estimates
-    assert set(est) >= {'largest', 'karton-martin', 'halkier', 'feller', 'feller_alpha'}
-    for method in ('largest', 'karton-martin', 'halkier'):
+    assert set(est) == {'largest', 'karton-martin', 'halkier'}
+    for method in est:
         assert abs(est[method]['sum_error']) < 1e-8
     # linear extrapolations lie below HF/QZ (HF converges from above)
     assert est['halkier']['mol'] < res.hf_mol['Q']
     assert est['karton-martin']['mol'] < res.hf_mol['Q']
-    # feller: molecular value sensible, atomic sum generally not equal to it
-    assert est['feller']['mol'] < res.hf_mol['Q']
-    assert numpy.isfinite(est['feller']['mol'])
     text = res.summary()
-    assert 'HF/CBS feller' in text and 'feller alpha_A' in text
+    assert 'HF/CBS halkier' in text and 'feller' not in text
     assert res.eda_results['Q'].orbital_basis == 'nao'
 
 
 def test_composite_hf_cbs_schemes(hf_mol):
-    for method in ('largest', 'karton-martin', 'halkier', 'feller'):
+    for method in eda_cbs.HF_CBS_METHODS:
         res = eda_cbs.QTN(hf_mol, hf_cbs=method, verbose=0).kernel()
         est = res.hf_estimates[method]
-        assert numpy.allclose(res.e_hf, est['atoms'], equal_nan=True)
+        assert numpy.allclose(res.e_hf, est['atoms'])
         assert abs(res.e_hf_mol - est['mol']) < 1e-12
-        if method != 'feller':
-            assert abs(res.e_tot.sum() - res.e_tot_mol) < 1e-8
-            assert res.hf_coeff is not None
-        else:
-            assert res.hf_coeff is None
-            assert abs(res.e_tot.sum() - res.e_tot_mol - res.hf_sum_error) < 1e-8
-        assert 'feller_alpha' in res.hf_estimates
-    with pytest.raises(ValueError):
-        eda_cbs.QTN(hf_mol, hf_cbs='no-such-scheme')
+        assert abs(res.e_tot.sum() - res.e_tot_mol) < 1e-8
+        assert abs(sum(res.hf_coeff.values()) - 1.0) < 1e-12
+    for bad in ('no-such-scheme', 'feller'):
+        with pytest.raises(ValueError):
+            eda_cbs.QTN(hf_mol, hf_cbs=bad)
 
 
 # ---------------------------------------------------------------------------
@@ -246,25 +228,17 @@ def test_ccsd_t_gradient_uses_t_lambda():
     assert abs(g.sum(axis=0)).max() < 1e-6   # translational invariance
 
 
-def test_hf_cbs_gradient_feller_chain_rule():
+def test_hf_cbs_gradient_is_the_linear_combination():
     from pyscf_eda import grad as eda_grad
     rng = numpy.random.default_rng(3)
     e = {'D': -1.0, 'T': -1.2, 'Q': -1.25}
     g = {x: rng.standard_normal((2, 3)) for x in e}
-    # finite difference along a random direction of the energies
-    d = {x: rng.standard_normal() for x in e}
-    h = 1e-6
-    ep = {x: e[x] + h * d[x] for x in e}
-    em = {x: e[x] - h * d[x] for x in e}
-    fd = (eda_cbs.hf_cbs_estimate('feller', ep) - eda_cbs.hf_cbs_estimate('feller', em)) / (2 * h)
-    gr = eda_grad.hf_cbs_gradient('feller', e, g)
-    # directional derivative: sum_x d[x] * dE/dE_x ; compare via linearity in g
-    gr_dir = eda_grad.hf_cbs_gradient('feller', e, {x: numpy.full((2, 3), d[x]) for x in e})
-    assert abs(gr_dir[0, 0] - fd) < 1e-6
-    for method in ('largest', 'halkier', 'karton-martin'):
+    for method in eda_cbs.HF_CBS_METHODS:
         gl = eda_grad.hf_cbs_gradient(method, e, g)
         c = eda_cbs.hf_cbs_coefficients(method, list(e))
         assert numpy.allclose(gl, sum(c[x] * g[x] for x in c))
+    with pytest.raises(ValueError):
+        eda_grad.hf_cbs_gradient('feller', e, g)
 
 
 @pytest.fixture(scope='module')
@@ -287,15 +261,6 @@ def test_cbs_gradient_against_finite_difference(h2_qtd_grad):
         e[dz] = eda_cbs.QTD(mol, verbose=0).kernel().e_tot_mol
     fd = (e[h] - e[-h]) / (2 * h) * B
     assert abs(res.grad[1, 2] - fd) < 2e-5
-    # HF part with the Feller formula (nonlinear) also differentiates correctly
-    mol = gto.M(atom='H 0 0 0; H 0 0 0.74', basis='sto-3g', verbose=0)
-    res_f = eda_cbs.QTD(mol, with_grad=True, hf_cbs='feller', verbose=0).kernel()
-    ef = {}
-    for dz in (h, -h):
-        m = gto.M(atom=f'H 0 0 0; H 0 0 {0.74 + dz}', basis='sto-3g', verbose=0)
-        ef[dz] = eda_cbs.QTD(m, hf_cbs='feller', verbose=0).kernel().e_tot_mol
-    fd_f = (ef[h] - ef[-h]) / (2 * h) * B
-    assert abs(res_f.grad[1, 2] - fd_f) < 2e-5
     assert 'Gradient of E_QTD(CBS)' in res.summary()
 
 

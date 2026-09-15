@@ -61,26 +61,17 @@ def ccsd_t_gradient(mycc, eris=None, lambda_tol=1e-9, verbose=0):
 
 
 def hf_cbs_gradient(method, energies, grads, alpha=None):
-    """Gradient of the HF/CBS estimate {X: E} given the gradients {X: dE/dR}.
+    """Gradient of the HF/CBS estimate given the gradients {X: dE/dR}.
 
-    Linear schemes use their coefficients; the nonlinear Feller formula
-    E = E_Q - (E_Q - E_T)^2 / (E_Q - 2 E_T + E_D) is differentiated exactly.
+    Every scheme is linear in the energies, so the gradient is the same
+    linear combination of the gradients (``energies`` only selects the
+    cardinal numbers).
     """
     from pyscf_eda import cbs
     if alpha is None:
         alpha = cbs.HALKIER_ALPHA
-    if method != 'feller':
-        coeff = cbs.hf_cbs_coefficients(method, list(energies), alpha=alpha)
-        return sum(c * grads[x] for x, c in coeff.items())
-    cards = sorted(energies, key=cbs.CARDINAL.get)[-3:]
-    x, y, z = cards
-    e_x, e_y, e_z = (float(energies[k]) for k in cards)
-    g_x, g_y, g_z = (grads[k] for k in cards)
-    n = e_z - e_y
-    d = e_z - 2.0 * e_y + e_x
-    dn = g_z - g_y
-    dd = g_z - 2.0 * g_y + g_x
-    return g_z - (2.0 * n * dn * d - n * n * dd) / (d * d)
+    coeff = cbs.hf_cbs_coefficients(method, list(energies), alpha=alpha)
+    return sum(c * grads[x] for x, c in coeff.items())
 
 
 def format_gradient(mol, grad, title='Gradient (hartree/bohr)'):

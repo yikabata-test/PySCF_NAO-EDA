@@ -2,10 +2,9 @@
 """CBS estimates of the atomic Hartree-Fock energies of H2O.
 
 Runs RHF/cc-pVDZ, TZ, QZ with the NAO-EDA and applies the two-point linear
-(Halkier, Karton-Martin) and the three-point nonlinear (Feller)
-extrapolations atom by atom.  The table shows the atomic-sum errors and the
-fitted exponents alpha_A, which reveal whether an atomic HF energy converges
-monotonically with the cardinal number.
+extrapolations (Halkier, Karton-Martin) atom by atom.  All schemes are
+linear, so the atomic sums equal the molecular extrapolations; the table
+lists the atomic values of every scheme and these sum checks.
 """
 
 from pyscf import gto

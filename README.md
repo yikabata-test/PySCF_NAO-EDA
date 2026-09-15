@@ -370,8 +370,8 @@ print(res.eda_results) # 各レベルの EDA 結果オブジェクト
 `with_grad=True` を指定すると，各レベル (RHF, MP2, CCSD, CCSD(T); frozen core 対応) の解析的勾配を
 エネルギー計算に用いたのと同じ SCF/MP2/CCSD オブジェクトから求め，モデルの係数で線形結合して
 CBS エネルギーの勾配 $\partial E_{CBS}/\partial \mathbf R$ (`res.grad`, natm × 3, hartree/bohr) を返します
-(エネルギー計算の重複はありません)。HF/CBS 部分は `hf_cbs` の方式に従い，非線形の Feller 式も
-厳密に微分します。各レベルの勾配は `res.grads[(手法, 基底)]`，`res.hf_grads[基底]` に保存されます。
+(エネルギー計算の重複はありません)。HF/CBS 部分は `hf_cbs` の方式 (すべてエネルギーについて線形) の
+係数で同様に線形結合します。各レベルの勾配は `res.grads[(手法, 基底)]`，`res.hf_grads[基底]` に保存されます。
 
 ```python
 res = eda_cbs.QTD(mol, with_grad=True).kernel()
@@ -393,14 +393,14 @@ HF 部分はフィッティングモデルの対象外なので，途中で得�
 |---|---|---|
 | `'halkier'` (既定) | 2 点 (TZ, QZ) $E(X)=E_{CBS}+A\,e^{-\alpha X}$，$\alpha=1.63$ 固定 (`hf_alpha`) | エネルギーについて線形 |
 | `'karton-martin'` | 2 点 (TZ, QZ) $E(X)=E_{CBS}+A\,(X+1)e^{-9\sqrt{X}}$ | 線形 |
-| `'feller'` | 3 点 (DZ, TZ, QZ) $E(X)=E_{CBS}+A\,e^{-\alpha X}$，$\alpha$ もフィット: $E_{CBS}=E_Q-(E_Q-E_T)^2/(E_Q-2E_T+E_D)$ | **非線形** |
 | `'largest'` | 外挿なし (QZ の値) | – |
 
-線形な 2 点式は原子ごとに適用しても和が分子の外挿値と一致します。Feller の 3 点式は非線形なので，
-原子ごとに適用すると和が分子の値と一致せず，原子の HF エネルギーが $X$ に対して単調・幾何級数的に
-収束していないとき (例: H2O の H 原子は TZ→QZ で上昇) には分母が小さくなり不安定になります。
-検証のため，結果には全方式の見積り (原子ごと・分子全体)，原子和と分子値の差，
-Feller のフィット指数 $\alpha_A=\ln[(E_T-E_D)/(E_Q-E_T)]$ (単調収束でなければ nan) が
+いずれもエネルギーについて線形なので，原子ごとに適用しても和が分子の外挿値と一致し
+(size-consistent)，勾配も同じ係数の線形結合で得られます。指数もフィットする非線形の
+3 点式 (Feller 式など) は意図的に採用していません。原子ごとに適用すると和が分子の値と
+一致せず，原子の HF エネルギーが $X$ に対して単調に収束していないとき (例: H2O の H 原子は
+TZ→QZ で上昇) には不安定になるためです。
+結果には全方式の見積り (原子ごと・分子全体) と原子和と分子値の差 (丸め誤差の検査) が
 `res.hf_estimates` に格納され，`summary()` にも表示されます。
 さらに，選んだ方式だけでなく全方式の HF/CBS に相関エネルギーの CBS 値を加えた
 全エネルギー (原子・分子) を `res.e_tot_by_hf` / `res.e_tot_mol_by_hf` に格納し，
@@ -410,8 +410,8 @@ Feller のフィット指数 $\alpha_A=\ln[(E_T-E_D)/(E_Q-E_T)]$ (単調収束�
 
 ```python
 hfres = eda_cbs.HFCBS(mol, basis_family='cc-pv').kernel()   # RHF/DZ,TZ,QZ + EDA のみ
-print(hfres.summary())          # 全方式の原子 HF/CBS，原子和 − 分子値，alpha_A
-print(hfres.estimates['feller']['atoms'], hfres.estimates['feller_alpha'])
+print(hfres.summary())          # 全方式の原子 HF/CBS，原子和 − 分子値
+print(hfres.estimates['halkier']['atoms'])
 ```
 
 ### 収束判定と勾配の精度
