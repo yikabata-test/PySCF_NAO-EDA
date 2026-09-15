@@ -11,8 +11,12 @@ PySCF 上でエネルギー密度解析 (Energy Density Analysis, EDA) を行い
   analysis: Implementation and applications",
   *Chem. Phys. Lett.* **424**, 193–198 (2006). — NAO-EDA, LSO-EDA
 
-現在は **閉殻 Hartree–Fock (RHF)** に対する従来型 EDA，LSO-EDA，NAO-EDA を
-実装しています (`pyscf_eda.rhf`, `pyscf_eda.orth`)。
+* M. Kobayashi, Y. Imamura, H. Nakai, "Alternative linear-scaling methodology for the
+  second-order Møller–Plesset perturbation calculation based on the divide-and-conquer
+  method", *J. Chem. Phys.* **127**, 074103 (2007). — MP2 相関エネルギーの分割 (Sec. II B)
+
+現在は **閉殻 Hartree–Fock (RHF)** と **閉殻 MP2** に対する従来型 EDA，LSO-EDA，NAO-EDA を
+実装しています (`pyscf_eda.rhf`, `pyscf_eda.mp2`, `pyscf_eda.orth`)。
 
 ## インストール
 
@@ -108,6 +112,40 @@ CO2 (RHF, R = 1.16 Å) の C 原子のエネルギー比率 $E_C/E_{total}$ は�
 NAO-EDA では STO-3G を除き 20.8–20.9 % でほぼ一定であり，LSO-EDA では diffuse 関数で
 外れ値が現れるなど，論文 Table 2 と同じ傾向が得られます (`examples/co2_nao_eda.py`)。
 
+## MP2-EDA
+
+DC-MP2 論文 (Kobayashi–Imamura–Nakai 2007) の Sec. II B は，MP2 相関エネルギーを
+「最後の AO→MO 変換を残す」ことで原子に分割します。サブシステムを 1 原子，バッファ領域を
+全系にとれば DC の式 (20)–(22) は通常の MP2 に帰着するので，式 (18) をそのまま実装しています。
+
+$$E_{corr} = \sum_{ij}^{occ}\sum_{ab}^{vir}(ia|jb)\,(2t_{ijab}-t_{ijba}),\qquad
+  t_{ijab} = \frac{(ia|jb)}{\varepsilon_i+\varepsilon_j-\varepsilon_a-\varepsilon_b}$$
+
+$$E_{corr}^A = \sum_{ij}^{occ}\sum_{ab}^{vir}\Big[w_{occ}\sum_{\mu\in A}C_{\mu i}(\mu a|jb)
+  + w_{vir}\sum_{\mu\in A}C_{\mu a}(i\mu|jb)\Big](2t_{ijab}-t_{ijba}),\qquad w_{occ}+w_{vir}=1$$
+
+$(pq|rs)$ は化学者の記法の二電子積分です。論文の数値検証に従い既定は $w_{occ}=1$
+(占有軌道側のみで分割) で，`w_occ` 引数で変更できます。原子の MP2 エネルギーは
+$E_{MP2}^A = E_{HF}^A + E_{corr}^A$ で，$\sum_A E_{MP2}^A$ は MP2 全エネルギーと一致します。
+frozen core (`mp.MP2(mf, frozen=...)`) と密度フィッティング MP2 に対応しています。
+
+```python
+from pyscf import gto, scf, mp
+from pyscf_eda import mp2 as eda_mp2
+
+mf = scf.RHF(mol).run()
+pt = mp.MP2(mf, frozen=1).run()
+res = eda_mp2.EDA(pt).kernel()                      # 従来型 (AO) 分割
+res = eda_mp2.EDA(pt, orbital_basis='nao').kernel() # NAO 基底での分割
+print(res.summary())
+print(res.e_hf, res.e_corr, res.e_tot)              # 原子ごとの HF / 相関 / MP2 エネルギー
+```
+
+`res` には RHF-EDA の全成分に加えて `e_hf`，`e_corr_occ` (占有側分割)，`e_corr_vir` (仮想側分割)，
+`e_corr` ($=w_{occ}e_{corr}^{occ}+w_{vir}e_{corr}^{vir}$)，`e_tot` ($=E_{MP2}^A$) が入ります。
+NAO-EDA では AO 添字 $\mu$ を直交化軌道 $\phi_l$ に置き換え，$C\to X^{-1}C$，
+$(\mu a|jb)\to(la|jb)$ として同じ式を評価します。
+
 ## 例
 
 * `examples/h2o_rhf_eda.py` – 論文 Table 1 と同じ H2O 構造 (cc-pVDZ) での RHF-EDA。
@@ -115,11 +153,14 @@ NAO-EDA では STO-3G を除き 20.8–20.9 % でほぼ一定であり，LSO-EDA
   (単一原子ではその全エネルギーがそのまま原子エネルギーになるため EDA は不要です)。
 * `examples/h2o_bond_breaking.py` – O–H 結合伸長 (2002 年論文 Table 2 に対応) に伴う原子エネルギーの変化
 * `examples/co2_nao_eda.py` – CO2 での従来型 / LSO- / NAO-EDA の基底関数依存性 (2006 年論文 Table 1, 2 に対応)
+* `examples/h2o_mp2_eda.py` – H2O の MP2-EDA (占有側 / 仮想側分割の比較，NAO 基底，UMP2 孤立原子との差)
 
 ## 制限事項
 
-* 現在は閉殻 RHF のみ対応しています (UHF/ROHF, KS-DFT は未対応で例外を出します)。
-  検証などで孤立原子のエネルギーが必要な場合は，通常の UHF 計算を用いてください。
+* 現在は閉殻 RHF と閉殻 MP2 のみ対応しています (UHF/ROHF, UMP2, KS-DFT は未対応で例外を出します)。
+  検証などで孤立原子のエネルギーが必要な場合は，通常の UHF / UMP2 計算を用いてください。
+* MP2-EDA は原子ごとに半変換積分 $(la|jb)$, $(il|jb)$ を作るため，メモリは
+  $O(n_A n_{vir} n_{occ} n_{vir})$，計算量は原子数 × 積分変換のコストになります。
   密度フィッティング (`.density_fit()`) や ECP を用いた RHF には対応しています。
 * `mf.get_hcore()` に $T + V_{nuc} (+V_{ECP})$ 以外の一電子項 (外場など) が含まれる場合，
   その寄与は基底関数で分割し `e_other` として報告します。
