@@ -121,9 +121,26 @@ $$P' = X^{-1} P X^{-1\dagger},\qquad M' = X^\dagger M X,\qquad
 評価されます。核間反発と核–電子引力の原子核分割部分は基底に依存しません。
 どの軌道基底でも $\sum_A E_{TOT}^A$ は SCF 全エネルギーと一致します。
 
-CO2 (RHF, R = 1.16 Å) の C 原子のエネルギー比率 $E_C/E_{total}$ は，
-NAO-EDA では STO-3G を除き 20.8–20.9 % でほぼ一定であり，LSO-EDA では diffuse 関数で
-外れ値が現れるなど，論文 Table 2 と同じ傾向が得られます (`examples/co2_nao_eda.py`)。
+### 実装の検証と基底依存性についての注意
+
+* 実装は論文の式 (6), (7) を PySCF の NAO (`pyscf.lo.orth_ao(mf, 'nao')`) でそのまま評価した
+  独立計算と 1e-8 以内で一致し，NAO 基底での電子数は PySCF の NPA と一致します
+  (`tests/test_rhf_eda.py`)。原子ごとの部分トレースは原子内のユニタリ回転に不変なので，
+  NAO の「natural character の復元」の有無は結果に影響しません。
+* CO2 (RHF, R = 1.16 Å, cc-pVDZ) の C 原子のエネルギー比率 $E_C/E_{total}$ は NAO-EDA で
+  20.91 %，従来型で 20.10 % であり，論文 Table 2 (B3LYP: 20.92 %, 20.15 %) をよく再現します。
+  NAO-EDA は STO-3G を除き 20.8–20.9 % でほぼ一定です (`examples/co2_nao_eda.py`)。
+* 論文で従来型 EDA に現れた外れ値 (aug-cc-pVTZ で $E_C/E_{total}$ = 19.72 %, Mulliken 電子数 4.4)
+  は，PySCF 既定の球面調和型基底では現れず (20.13 %, 5.52)，GAMESS 既定のデカルト型基底
+  (`cart=True`) にすると再現されます (20.03 %, 4.28)。NAO-EDA はデカルト/球面で不変 (20.79 %) です。
+  論文が示す NAO-EDA の優位性の大部分は，このような Mulliken 型分割の破綻を NAO が回避する点に
+  あります。
+* 一方，Mulliken 型分割が破綻しない条件では NAO-EDA が常に基底依存性が小さいわけではありません。
+  H2O (RHF, 球面調和基底 11 種, STO-3G を除く) の O 原子エネルギーの標準偏差は従来型 0.03，
+  NAO 0.05，LSO 0.21 hartree で，NAO-EDA は Pople 系基底の間ではほぼ一定 (−74.41 ± 0.02) ですが
+  cc-pVXZ 系では −74.34〜−74.56 と変動します。また NAO-EDA は陽イオン的な原子に大きく負の
+  エネルギーを与えます (H2O の H: −0.84 hartree; 論文の CO2 でも C に 1.45 hartree 移動)。
+  これらは手法固有の性質で，用途に応じて `orbital_basis='ao'` も検討してください。
 
 ## MP2-EDA
 
