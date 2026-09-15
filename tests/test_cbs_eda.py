@@ -218,3 +218,82 @@ def test_composite_hf_cbs_schemes(hf_mol):
         assert 'feller_alpha' in res.hf_estimates
     with pytest.raises(ValueError):
         eda_cbs.QTN(hf_mol, hf_cbs='no-such-scheme')
+
+
+# ---------------------------------------------------------------------------
+# analytic gradients of the CBS energy
+# ---------------------------------------------------------------------------
+
+def test_ccsd_t_gradient_uses_t_lambda():
+    from pyscf_eda import grad as eda_grad
+    from pyscf.grad import ccsd_t as ccsd_t_grad
+    B = 0.52917721092
+    def run(z):
+        m = gto.M(atom=f'F 0 0 0; H 0 0 {z}', basis='cc-pvdz', verbose=0)
+        f = scf.RHF(m).run(conv_tol=1e-12)
+        c = cc.CCSD(f, frozen=1)
+        c.conv_tol, c.conv_tol_normt = 1e-11, 1e-9
+        return c.run()
+    c0 = run(0.917)
+    g = eda_grad.ccsd_t_gradient(c0)
+    h = 1e-3
+    cp, cm = run(0.917 + h), run(0.917 - h)
+    fd = ((cp.e_tot + cp.ccsd_t()) - (cm.e_tot + cm.ccsd_t())) / (2 * h) * B
+    assert abs(g[1, 2] - fd) < 1e-5
+    # the plain PySCF call without lambda amplitudes is *not* the CCSD(T) gradient
+    g_wrong = ccsd_t_grad.Gradients(c0).kernel()
+    assert abs(g_wrong[1, 2] - fd) > 1e-4
+    assert abs(g.sum(axis=0)).max() < 1e-6   # translational invariance
+
+
+def test_hf_cbs_gradient_feller_chain_rule():
+    from pyscf_eda import grad as eda_grad
+    rng = numpy.random.default_rng(3)
+    e = {'D': -1.0, 'T': -1.2, 'Q': -1.25}
+    g = {x: rng.standard_normal((2, 3)) for x in e}
+    # finite difference along a random direction of the energies
+    d = {x: rng.standard_normal() for x in e}
+    h = 1e-6
+    ep = {x: e[x] + h * d[x] for x in e}
+    em = {x: e[x] - h * d[x] for x in e}
+    fd = (eda_cbs.hf_cbs_estimate('feller', ep) - eda_cbs.hf_cbs_estimate('feller', em)) / (2 * h)
+    gr = eda_grad.hf_cbs_gradient('feller', e, g)
+    # directional derivative: sum_x d[x] * dE/dE_x ; compare via linearity in g
+    gr_dir = eda_grad.hf_cbs_gradient('feller', e, {x: numpy.full((2, 3), d[x]) for x in e})
+    assert abs(gr_dir[0, 0] - fd) < 1e-6
+    for method in ('largest', 'halkier', 'karton-martin'):
+        gl = eda_grad.hf_cbs_gradient(method, e, g)
+        c = eda_cbs.hf_cbs_coefficients(method, list(e))
+        assert numpy.allclose(gl, sum(c[x] * g[x] for x in c))
+
+
+@pytest.fixture(scope='module')
+def h2_qtd_grad():
+    mol = gto.M(atom='H 0 0 0; H 0 0 0.74', basis='sto-3g', verbose=0)
+    return eda_cbs.QTD(mol, with_grad=True, verbose=0).kernel()
+
+
+def test_cbs_gradient_against_finite_difference(h2_qtd_grad):
+    res = h2_qtd_grad
+    assert res.grad.shape == (2, 3)
+    assert abs(res.grad.sum(axis=0)).max() < 1e-6
+    assert set(res.grads) == {('MP2', 'D'), ('MP2', 'T'), ('MP2', 'Q'), ('CCSD', 'D'),
+                              ('CCSD', 'T'), ('CCSD(T)', 'D')}
+    B = 0.52917721092
+    h = 2e-3
+    e = {}
+    for dz in (h, -h):
+        mol = gto.M(atom=f'H 0 0 0; H 0 0 {0.74 + dz}', basis='sto-3g', verbose=0)
+        e[dz] = eda_cbs.QTD(mol, verbose=0).kernel().e_tot_mol
+    fd = (e[h] - e[-h]) / (2 * h) * B
+    assert abs(res.grad[1, 2] - fd) < 2e-5
+    # HF part with the Feller formula (nonlinear) also differentiates correctly
+    mol = gto.M(atom='H 0 0 0; H 0 0 0.74', basis='sto-3g', verbose=0)
+    res_f = eda_cbs.QTD(mol, with_grad=True, hf_cbs='feller', verbose=0).kernel()
+    ef = {}
+    for dz in (h, -h):
+        m = gto.M(atom=f'H 0 0 0; H 0 0 {0.74 + dz}', basis='sto-3g', verbose=0)
+        ef[dz] = eda_cbs.QTD(m, hf_cbs='feller', verbose=0).kernel().e_tot_mol
+    fd_f = (ef[h] - ef[-h]) / (2 * h) * B
+    assert abs(res_f.grad[1, 2] - fd_f) < 2e-5
+    assert 'Gradient of E_QTD(CBS)' in res.summary()

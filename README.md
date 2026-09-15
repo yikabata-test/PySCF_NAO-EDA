@@ -357,6 +357,25 @@ print(res.eda_results) # 各レベルの EDA 結果オブジェクト
 主なオプション: `basis_family='cc-pv' | 'aug-cc-pv'`，`frozen='auto' | int`，
 `orbital_basis='nao' | 'ao' | 'lso'`，`ne_partition`，`w_occ`，`hf_cbs`。
 
+### CBS エネルギーの解析的核座標勾配
+
+`with_grad=True` を指定すると，各レベル (RHF, MP2, CCSD, CCSD(T); frozen core 対応) の解析的勾配を
+エネルギー計算に用いたのと同じ SCF/MP2/CCSD オブジェクトから求め，モデルの係数で線形結合して
+CBS エネルギーの勾配 $\partial E_{CBS}/\partial \mathbf R$ (`res.grad`, natm × 3, hartree/bohr) を返します
+(エネルギー計算の重複はありません)。HF/CBS 部分は `hf_cbs` の方式に従い，非線形の Feller 式も
+厳密に微分します。各レベルの勾配は `res.grads[(手法, 基底)]`，`res.hf_grads[基底]` に保存されます。
+
+```python
+res = eda_cbs.QTD(mol, with_grad=True).kernel()
+print(res.e_tot)     # CCSD(T)/CBS の原子エネルギー
+print(res.grad)      # CBS エネルギーの核座標勾配
+```
+
+**注意 (PySCF の CCSD(T) 勾配):** `pyscf.grad.ccsd_t.Gradients(mycc).kernel()` を引数なしで
+呼ぶと CCSD のラムダ振幅が使われ，有限差分と 6e-4 hartree/bohr 程度ずれた誤った勾配になります。
+`pyscf_eda.grad.ccsd_t_gradient` は `pyscf.cc.ccsd_t_lambda` で CCSD(T) のラムダ方程式を解いてから
+勾配を評価し，有限差分と 1e-6 で一致することをテストで確認しています。
+
 ### Hartree–Fock エネルギーの CBS 見積り
 
 HF 部分はフィッティングモデルの対象外なので，途中で得られる DZ, TZ, QZ の HF エネルギーから
@@ -398,6 +417,7 @@ print(hfres.estimates['feller']['atoms'], hfres.estimates['feller_alpha'])
 * `examples/h2o_ccsd_t_eda.py` – H2O の CCSD(T)-EDA ($U^{0,0}$ / $U^{2,2}$，$E_T^{[4]}$ / $E_{ST}^{[5]}$，UCCSD(T) 孤立原子との差)
 * `examples/h2o_cbs_eda.py` – H2O の QDD / QTD による CBS 極限の原子エネルギー
 * `examples/h2o_hf_cbs.py` – H2O の原子 HF エネルギーの CBS 見積り (線形 / 非線形外挿の安定性の検証)
+* `examples/h2o_cbs_energy_gradient.py` – H2O の CCSD(T)/CBS 原子エネルギー (QDD, QTD) と CBS エネルギーの解析的勾配を 1 つの入力で計算
 
 ## 制限事項
 

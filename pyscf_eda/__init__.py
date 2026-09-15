@@ -12,6 +12,7 @@ Currently implemented
 * ``pyscf_eda.ccsd`` : closed-shell CCSD (HF part + partitioned correlation energy)
 * ``pyscf_eda.ccsd_t``: closed-shell CCSD(T) (adds the partitioned (T) correction)
 * ``pyscf_eda.cbs``  : atomic energies at the CBS limit (QDD / QTD / QTT / QTN fitting models)
+* ``pyscf_eda.grad`` : analytic nuclear gradients of the levels and of the CBS energy
 """
 
 __version__ = '0.1.0'
@@ -23,4 +24,5 @@ from pyscf_eda import mp2  # noqa: F401
 from pyscf_eda import ccsd  # noqa: F401
 from pyscf_eda import ccsd_t  # noqa: F401
 from pyscf_eda import cbs  # noqa: F401
+from pyscf_eda import grad  # noqa: F401
 from pyscf_eda.rhf import EDA, EDAResult, kernel, atom_energies, nao_eda, lso_eda, becke_grids, xc_energy_by_atom, mulliken_eda, grid_eda  # noqa: F401

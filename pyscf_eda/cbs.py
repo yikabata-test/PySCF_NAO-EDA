@@ -48,6 +48,14 @@ D, T, Q basis sets computed along the way are extrapolated with one of
                       with alpha fitted, E_CBS = E_Q - (E_Q - E_T)^2 /
                       (E_Q - 2 E_T + E_D)  [Feller, J. Chem. Phys. 96, 6104 (1992)]
 
+Nuclear gradients
+-----------------
+With ``with_grad=True`` the analytic gradient of every level is computed
+from the same SCF/MP2/CCSD objects (``pyscf_eda.grad``) and combined with
+the same coefficients into the gradient of the CBS energy, dE_CBS/dR
+(``result.grad``, shape (natm, 3)); the HF/CBS part follows the chosen
+``hf_cbs`` scheme (the Feller formula is differentiated exactly).
+
 The two-point schemes are linear in the energies, so the atomic HF
 energies extrapolate consistently (the atomic sum equals the molecular
 extrapolation).  The Feller formula is nonlinear: applied atom by atom it
@@ -251,8 +259,11 @@ class CBSEDAResult:
 
     def __init__(self, mol, scheme, basis_family, coeff, hf_cbs, corr, hf,
                  corr_mol, hf_mol, eda_results, orbital_basis, ne_partition, w_occ, frozen,
-                 hf_alpha=HALKIER_ALPHA):
+                 hf_alpha=HALKIER_ALPHA, grads=None, hf_grads=None):
         self.mol = mol
+        self.grads = grads          # {(method, X): total-energy gradient (natm, 3)}
+        self.hf_grads = hf_grads    # {X: HF gradient}
+        self.grad = self.grad_hf = self.grad_corr = None
         self.scheme = scheme
         self.basis_family = basis_family
         self.coeff = coeff
@@ -279,6 +290,11 @@ class CBSEDAResult:
         self.e_hf_mol = self.hf_estimates[hf_cbs]['mol']
         self.e_tot_mol = self.e_hf_mol + self.e_corr_mol
         self.hf_sum_error = self.hf_estimates[hf_cbs]['sum_error']
+        if grads is not None:
+            from pyscf_eda import grad as eda_grad
+            self.grad_corr = sum(c * (grads[key] - hf_grads[key[1]]) for key, c in coeff.items())
+            self.grad_hf = eda_grad.hf_cbs_gradient(hf_cbs, hf_mol, hf_grads, alpha=hf_alpha)
+            self.grad = self.grad_hf + self.grad_corr
 
     @property
     def atom_energies(self):
@@ -324,6 +340,14 @@ class CBSEDAResult:
         lines.append(f"Molecular CBS correlation energy: {self.e_corr_mol:20.10f}")
         lines.append(f"Molecular CBS total energy      : {self.e_tot_mol:20.10f}")
         lines.append(f"Sum of atomic energies          : {self.e_tot.sum():20.10f}")
+        if self.grad is not None:
+            from pyscf_eda import grad as eda_grad
+            lines.append('-' * len(header))
+            lines.append(eda_grad.format_gradient(
+                mol, self.grad, f'Gradient of E_{self.scheme}(CBS) (hartree/bohr; '
+                f'HF part: {self.hf_cbs})'))
+            lines.append(eda_grad.format_gradient(mol, self.grad_hf, '  HF/CBS part'))
+            lines.append(eda_grad.format_gradient(mol, self.grad_corr, '  correlation (CBS) part'))
         return '\n'.join(lines)
 
     def __repr__(self):
@@ -355,12 +379,16 @@ class CompositeEDA(lib.StreamObject):
         Exponent of the 'halkier' two-point exponential extrapolation.
     conv_tol, cc_conv_tol, cc_conv_tol_normt : float
         Convergence thresholds of the SCF and CCSD calculations.
+    with_grad : bool
+        Also compute the analytic nuclear gradients of every level from the
+        same calculations and combine them into the CBS gradient
+        (``result.grad``).
     """
 
     def __init__(self, mol, scheme='QTD', basis_family='cc-pv', frozen='auto',
                  orbital_basis='nao', ne_partition='half', w_occ=1.0, hf_cbs='halkier',
                  hf_alpha=HALKIER_ALPHA, coeff_family=None, conv_tol=1e-10, cc_conv_tol=1e-9,
-                 cc_conv_tol_normt=1e-7, verbose=None):
+                 cc_conv_tol_normt=1e-7, verbose=None, with_grad=False):
         scheme = scheme.upper()
         if scheme not in SCHEMES:
             raise ValueError(f'unknown scheme {scheme}; choose from {tuple(SCHEMES)}')
@@ -394,7 +422,12 @@ class CompositeEDA(lib.StreamObject):
         self.cc_conv_tol_normt = cc_conv_tol_normt
         self.verbose = mol.verbose if verbose is None else verbose
         self.stdout = mol.stdout
+        self.with_grad = with_grad
         self.mfs = {}
+        self.mps = {}
+        self.ccs = {}
+        self.grads = {}
+        self.hf_grads = {}
         self.eda_results = {}
         self.result = None
 
@@ -427,6 +460,9 @@ class CompositeEDA(lib.StreamObject):
                  ', '.join(f'{m}/{x}Z' for x, m in sorted(plan.items(), key=lambda t: CARDINAL[t[0]])))
         eda_kw = dict(ne_partition=self.ne_partition, orbital_basis=self.orbital_basis)
         corr, hf, corr_mol, hf_mol = {}, {}, {}, {}
+        if self.with_grad:
+            from pyscf_eda import grad as eda_grad
+        gverb = max(self.verbose - 2, 0)
         for x in sorted(plan, key=CARDINAL.get):
             top = plan[x]
             mol = self._build_mol(x)
@@ -446,10 +482,15 @@ class CompositeEDA(lib.StreamObject):
             hf[x] = hf_res.e_tot
             hf_mol[x] = mf.e_tot
             self.eda_results[('HF', x)] = hf_res
+            if self.with_grad:
+                self.hf_grads[x] = eda_grad.hf_gradient(mf, verbose=gverb)
 
             pt = pyscf_mp.MP2(mf, frozen=frozen)
             pt.verbose = self.verbose
             pt.kernel()
+            self.mps[x] = pt
+            if self.with_grad:
+                self.grads[('MP2', x)] = eda_grad.mp2_gradient(pt, verbose=gverb)
             res = eda_mp2.EDA(pt, w_occ=self.w_occ, **eda_kw)
             res.verbose = 0
             res = res.kernel()
@@ -463,8 +504,13 @@ class CompositeEDA(lib.StreamObject):
                 mycc.conv_tol_normt = self.cc_conv_tol_normt
                 mycc.verbose = self.verbose
                 mycc.kernel()
+                self.ccs[x] = mycc
                 if not mycc.converged:
                     log.warn('CCSD with %s did not converge', self.basis_sets[x])
+                if self.with_grad:
+                    self.grads[('CCSD', x)] = eda_grad.ccsd_gradient(mycc, verbose=gverb)
+                    if top == 'CCSD(T)':
+                        self.grads[('CCSD(T)', x)] = eda_grad.ccsd_t_gradient(mycc, verbose=gverb)
                 if top == 'CCSD(T)':
                     res = eda_ccsd_t.EDA(mycc, w_occ=self.w_occ, **eda_kw)
                     res.verbose = 0
@@ -488,7 +534,9 @@ class CompositeEDA(lib.StreamObject):
         self.result = CBSEDAResult(self.mol, self.scheme, self.basis_family, self.coeff,
                                    self.hf_cbs, corr, hf, corr_mol, hf_mol, self.eda_results,
                                    self.orbital_basis, self.ne_partition, self.w_occ, self.frozen,
-                                   hf_alpha=self.hf_alpha)
+                                   hf_alpha=self.hf_alpha,
+                                   grads=self.grads if self.with_grad else None,
+                                   hf_grads=self.hf_grads if self.with_grad else None)
         diff = self.result.e_tot.sum() - self.result.e_tot_mol
         if abs(diff) > 1e-7:
             log.warn('Sum of atomic CBS energies differs from the molecular value by %.3e '
