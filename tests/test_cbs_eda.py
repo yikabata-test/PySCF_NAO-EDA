@@ -330,3 +330,23 @@ def test_composite_newton_option(hf_mol):
                          verbose=0).kernel()
     hf_d = eda_cbs.HFCBS(hf_mol, cardinals=('D', 'T'), newton=False, verbose=0).kernel()
     assert numpy.allclose(hf_n.hf_mol['T'], hf_d.hf_mol['T'], atol=1e-9)
+
+
+def test_total_energies_for_every_hf_scheme(qtd_result):
+    res = qtd_result
+    assert set(res.e_tot_by_hf) == {m for m in eda_cbs.HF_CBS_METHODS if m in res.hf_estimates}
+    assert numpy.allclose(res.e_tot_by_hf[res.hf_cbs], res.e_tot)
+    for m, e in res.e_tot_by_hf.items():
+        assert numpy.allclose(e, res.hf_estimates[m]['atoms'] + res.e_corr)
+        assert abs(res.e_tot_mol_by_hf[m] - (res.hf_estimates[m]['mol'] + res.e_corr_mol)) < 1e-12
+        assert f'E_QTD {m}' in res.summary()
+
+
+def test_gradients_for_every_hf_scheme(h2_qtd_grad):
+    res = h2_qtd_grad
+    assert set(res.grad_by_hf) == set(res.e_tot_by_hf)
+    assert numpy.allclose(res.grad_by_hf[res.hf_cbs], res.grad)
+    for m in ('largest', 'karton-martin'):
+        expect = sum(c * res.hf_grads[x] for x, c in
+                     eda_cbs.hf_cbs_coefficients(m, list(res.hf)).items()) + res.grad_corr
+        assert numpy.allclose(res.grad_by_hf[m], expect)

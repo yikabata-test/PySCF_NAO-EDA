@@ -401,7 +401,11 @@ HF 部分はフィッティングモデルの対象外なので，途中で得�
 収束していないとき (例: H2O の H 原子は TZ→QZ で上昇) には分母が小さくなり不安定になります。
 検証のため，結果には全方式の見積り (原子ごと・分子全体)，原子和と分子値の差，
 Feller のフィット指数 $\alpha_A=\ln[(E_T-E_D)/(E_Q-E_T)]$ (単調収束でなければ nan) が
-`res.hf_estimates` に格納され，`summary()` にも表示されます。HF のみを調べるには
+`res.hf_estimates` に格納され，`summary()` にも表示されます。
+さらに，選んだ方式だけでなく全方式の HF/CBS に相関エネルギーの CBS 値を加えた
+全エネルギー (原子・分子) を `res.e_tot_by_hf` / `res.e_tot_mol_by_hf` に格納し，
+`summary()` の末尾に「E_QTD halkier」「E_QTD karton-martin」… の行として出力します
+(勾配計算時は `res.grad_by_hf` に各方式の CBS 勾配も入ります)。HF のみを調べるには
 `eda_cbs.HFCBS(mol).kernel()` (または `eda_cbs.hf_cbs(mol)`) を使います。
 
 ```python

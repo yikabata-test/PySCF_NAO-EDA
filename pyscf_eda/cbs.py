@@ -298,6 +298,9 @@ class CBSEDAResult:
     hf_coeff    : dict {X: coefficient of the HF CBS estimate}
     e_corr_mol  : molecular CBS correlation energy (equals e_corr.sum())
     e_tot_mol   : molecular CBS total energy
+    e_tot_by_hf, e_tot_mol_by_hf : {hf method: CBS total energies} for every
+                  available HF/CBS scheme (atomic arrays / molecular values)
+    grad_by_hf  : {hf method: CBS gradient} when computed with gradients
     corr_mol    : dict of molecular correlation energies
     hf_mol      : dict of molecular HF energies
     eda_results : dict {(method, X): the underlying EDA result objects}
@@ -336,11 +339,19 @@ class CBSEDAResult:
         self.e_hf_mol = self.hf_estimates[hf_cbs]['mol']
         self.e_tot_mol = self.e_hf_mol + self.e_corr_mol
         self.hf_sum_error = self.hf_estimates[hf_cbs]['sum_error']
+        # CBS total energies with every available HF/CBS reference
+        self.e_tot_by_hf = {m: self.hf_estimates[m]['atoms'] + self.e_corr
+                            for m in HF_CBS_METHODS if m in self.hf_estimates}
+        self.e_tot_mol_by_hf = {m: self.hf_estimates[m]['mol'] + self.e_corr_mol
+                                for m in self.e_tot_by_hf}
+        self.grad_by_hf = None
         if grads is not None:
             from pyscf_eda import grad as eda_grad
             self.grad_corr = sum(c * (grads[key] - hf_grads[key[1]]) for key, c in coeff.items())
             self.grad_hf = eda_grad.hf_cbs_gradient(hf_cbs, hf_mol, hf_grads, alpha=hf_alpha)
             self.grad = self.grad_hf + self.grad_corr
+            self.grad_by_hf = {m: eda_grad.hf_cbs_gradient(m, hf_mol, hf_grads, alpha=hf_alpha)
+                               + self.grad_corr for m in self.e_tot_by_hf}
 
     @property
     def atom_energies(self):
@@ -386,6 +397,19 @@ class CBSEDAResult:
         lines.append(f"Molecular CBS correlation energy: {self.e_corr_mol:20.10f}")
         lines.append(f"Molecular CBS total energy      : {self.e_tot_mol:20.10f}")
         lines.append(f"Sum of atomic energies          : {self.e_tot.sum():20.10f}")
+        lines.append('-' * len(header))
+        lines.append(f'E_{self.scheme} (CBS) = E_HF/CBS + E_corr (CBS) with every HF/CBS scheme '
+                     '(atomic values; last column: molecular value)')
+        for method in HF_CBS_METHODS:
+            if method not in self.e_tot_by_hf:
+                continue
+            mark = ' *' if method == self.hf_cbs else ''
+            values = self.e_tot_by_hf[method]
+            lines.append(f"{f'E_{self.scheme} {method}{mark}':<20}"
+                         + ''.join(f"{values[ia]:>{width}.10f}" for ia in atoms)
+                         + f"{self.e_tot_mol_by_hf[method]:>{width}.10f}")
+            lines.append(f"{'  sum(atoms) - mol':<20}"
+                         f"{values.sum() - self.e_tot_mol_by_hf[method]:>{width * (len(atoms) + 1)}.3e}")
         if self.grad is not None:
             from pyscf_eda import grad as eda_grad
             lines.append('-' * len(header))
