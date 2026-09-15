@@ -17,9 +17,13 @@ PySCF 上でエネルギー密度解析 (Energy Density Analysis, EDA) を行い
 * M. Kobayashi, H. Nakai, "Extension of linear-scaling divide-and-conquer-based correlation
   method to coupled cluster theory with singles and doubles excitations",
   *J. Chem. Phys.* **129**, 044103 (2008). — CCSD 相関エネルギーの分割 (Sec. II B)
+* M. Kobayashi, H. Nakai, "Divide-and-conquer-based linear-scaling approach for traditional and
+  renormalized coupled cluster methods with single, double, and noniterative triple excitations",
+  *J. Chem. Phys.* **131**, 114108 (2009). — (T) 補正の分割 (Sec. II B)
 
-現在は **閉殻 Hartree–Fock (RHF)**，**閉殻 MP2**，**閉殻 CCSD** に対する従来型 EDA，LSO-EDA，
-NAO-EDA を実装しています (`pyscf_eda.rhf`, `pyscf_eda.mp2`, `pyscf_eda.ccsd`, `pyscf_eda.orth`)。
+現在は **閉殻 Hartree–Fock (RHF)**，**閉殻 MP2**，**閉殻 CCSD**，**閉殻 CCSD(T)** に対する
+従来型 EDA，LSO-EDA，NAO-EDA を実装しています
+(`pyscf_eda.rhf`, `pyscf_eda.mp2`, `pyscf_eda.ccsd`, `pyscf_eda.ccsd_t`, `pyscf_eda.orth`)。
 
 ## インストール
 
@@ -181,6 +185,41 @@ print(res.e_hf, res.e_corr, res.e_tot)                 # 原子ごとの HF / �
 
 結果オブジェクトの属性は MP2-EDA と同じです (`e_tot` が $E_{CCSD}^A$)。
 
+## CCSD(T)-EDA
+
+DC-CCSD(T) 論文 (Kobayashi–Nakai 2009) の Sec. II B に従います。(T) 補正は 4 次の三重励起項
+$E_T^{[4]}$ と 5 次の一重–三重励起項 $E_{ST}^{[5]}$ からなり (式 (9), (10))，両者は共通因子
+$t^{(2)}_{ijk,abc}D_{ijk,abc}$ (以下 $W$) を持ちます。化学者の記法で
+
+$$W_{ijk}^{abc} = P_{ijk}^{abc}\Big[\sum_e t_{ij}^{ae}(be|ck) - \sum_m t_{im}^{ab}(mj|ck)\Big],\qquad
+  Z_{ijk}^{abc} = t_{ia}(bj|ck) + t_{jb}(ai|ck) + t_{kc}(ai|bj)$$
+
+$$E_{(T)} = \sum_{ijk}\sum_{abc}\frac{\tfrac43 T_{abc} - 2T_{acb} + \tfrac23 T_{bca}}{D_{ijk,abc}}\,W_{ijk}^{abc},
+  \qquad T = W + Z$$
+
+です ($P$ は (ia),(jb),(kc) の 3 対の対称化演算子)。分割は共通因子 $W$ に対して行い，その
+3/4 変換積分中の 1 つの MO を原子 $A$ の基底関数 (または NAO) の部分和に置き換えます (式 (21)–(27))。
+論文で採用された $U^{0,0}$ (占有軌道 $k$ の分割) を既定とし，仮想軌道 $c$ を分割する $U^{2,2}$ も
+`w_occ` で混合できます ($X=1$, $Y=1$ の変種は未実装)。対称化演算子を係数側に移すと
+$P\,Y = 2\,r_3(T)/D$ となるので，原子ごとには非対称化の生の項 $R^A$ だけを作ればよく，
+
+$$E_{(T)}^A = 2\sum_{ijk}\sum_{abc}\frac{[r_3(W+Z)]_{ijk}^{abc}}{D_{ijk,abc}}\,R^{A,abc}_{ijk},\qquad
+  R^A = \sum_e t_{ij}^{ae}(be|c\,k_A) - \sum_m t_{im}^{ab}(mj|c\,k_A)$$
+
+として評価します。$\sum_A E_{(T)}^A = E_{(T)}$ は PySCF の `ccsd_t()` と 1e-9 以内で一致します。
+
+```python
+from pyscf_eda import ccsd_t as eda_ccsd_t
+
+mycc = cc.CCSD(mf, frozen=1).run()
+res = eda_ccsd_t.EDA(mycc).kernel()           # E_HF^A + E_corr(CCSD)^A + E_(T)^A
+print(res.e_ccsd, res.e_t, res.e_t4, res.e_st5, res.e_tot)
+```
+
+計算量・メモリは通常の (T) と同程度 ($O(o^3v^4)$，仮想軌道ブロックごとに $O(o^3v^2)$ と
+原子ごとの部分変換積分 $O(N_{atom}\,o\,v^3)$) なので，小〜中規模分子向けです。
+論文の renormalized CCSD(T) (R-CCSD(T)) は未実装です。
+
 ## 例
 
 * `examples/h2o_rhf_eda.py` – 論文 Table 1 と同じ H2O 構造 (cc-pVDZ) での RHF-EDA。
@@ -190,15 +229,16 @@ print(res.e_hf, res.e_corr, res.e_tot)                 # 原子ごとの HF / �
 * `examples/co2_nao_eda.py` – CO2 での従来型 / LSO- / NAO-EDA の基底関数依存性 (2006 年論文 Table 1, 2 に対応)
 * `examples/h2o_mp2_eda.py` – H2O の MP2-EDA (占有側 / 仮想側分割の比較，NAO 基底，UMP2 孤立原子との差)
 * `examples/h2o_ccsd_eda.py` – H2O の CCSD-EDA (MP2-EDA との比較，NAO 基底，UCCSD 孤立原子との差)
+* `examples/h2o_ccsd_t_eda.py` – H2O の CCSD(T)-EDA ($U^{0,0}$ / $U^{2,2}$，$E_T^{[4]}$ / $E_{ST}^{[5]}$，UCCSD(T) 孤立原子との差)
 
 ## 制限事項
 
-* 現在は閉殻 RHF，閉殻 MP2，閉殻 CCSD のみ対応しています (UHF/ROHF, UMP2, UCCSD, KS-DFT は
-  未対応で例外を出します)。検証などで孤立原子のエネルギーが必要な場合は，
-  通常の UHF / UMP2 / UCCSD 計算を用いてください。
+* 現在は閉殻 RHF，閉殻 MP2，閉殻 CCSD，閉殻 CCSD(T) のみ対応しています (UHF/ROHF, UMP2,
+  UCCSD, KS-DFT は未対応で例外を出します)。検証などで孤立原子のエネルギーが必要な場合は，
+  通常の UHF / UMP2 / UCCSD(T) 計算を用いてください。
 * MP2-/CCSD-EDA は原子ごとに半変換積分 $(la|jb)$, $(il|jb)$ を作るため，メモリは
   $O(n_A n_{vir} n_{occ} n_{vir})$，計算量は原子数 × 積分変換のコストになります。
-  CCSD-EDA は CCSD の相関エネルギーのみを分割します ((T) 補正は含みません)。
+  CCSD-EDA は CCSD の相関エネルギーのみを分割し，(T) 補正は `pyscf_eda.ccsd_t` で扱います。
   密度フィッティング (`.density_fit()`) や ECP を用いた RHF には対応しています。
 * `mf.get_hcore()` に $T + V_{nuc} (+V_{ECP})$ 以外の一電子項 (外場など) が含まれる場合，
   その寄与は基底関数で分割し `e_other` として報告します。

@@ -137,6 +137,15 @@ class EDA(lib.StreamObject):
     def _corr_partition(self):
         return corr_energy_by_atom(self._mp, x=self.orth_coeff, verbose=self.verbose)
 
+    def _make_result(self, hf_res, e_occ, e_vir, obj):
+        return self.result_class(hf_res, e_occ, e_vir, self.w_occ, e_tot_ref=self._e_tot_ref())
+
+    def _e_corr_ref(self):
+        return self._mp.e_corr
+
+    def _e_tot_ref(self):
+        return self._mp.e_tot
+
     def kernel(self):
         obj = self._mp
         log = logger.new_logger(self)
@@ -153,20 +162,22 @@ class EDA(lib.StreamObject):
 
         # correlation part
         e_occ, e_vir = self._corr_partition()
-        self.result = self.result_class(hf_res, e_occ, e_vir, self.w_occ, e_tot_ref=obj.e_tot)
+        self.result = self._make_result(hf_res, e_occ, e_vir, obj)
         method = self.result.method
 
         # sum-rule checks
+        e_corr_ref = self._e_corr_ref()
+        e_tot_ref = self._e_tot_ref()
         for name, arr in (('occupied', e_occ), ('virtual', e_vir)):
-            diff = arr.sum() - obj.e_corr
+            diff = arr.sum() - e_corr_ref
             if abs(diff) > self.tol_energy:
                 log.warn('Sum of the %s-partitioned atomic correlation energies '
                          '(%.10f) differs from E_corr (%.10f) by %.3e',
-                         name, arr.sum(), obj.e_corr, diff)
-        diff = self.result.e_tot.sum() - obj.e_tot
+                         name, arr.sum(), e_corr_ref, diff)
+        diff = self.result.e_tot.sum() - e_tot_ref
         if abs(diff) > self.tol_energy:
             log.warn('Sum of atomic %s energies (%.10f) differs from E(%s) '
-                     '(%.10f) by %.3e', method, self.result.e_tot.sum(), method, obj.e_tot, diff)
+                     '(%.10f) by %.3e', method, self.result.e_tot.sum(), method, e_tot_ref, diff)
         else:
             log.info('Sum of atomic %s energies %.10f reproduces E(%s) within %.1e',
                      method, self.result.e_tot.sum(), method, diff)
