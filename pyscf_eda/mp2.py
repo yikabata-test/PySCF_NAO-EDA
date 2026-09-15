@@ -60,6 +60,7 @@ class MP2EDAResult(EDAResult):
     components = ('e_nn', 'e_kin', 'e_ne', 'e_1el', 'e_coul', 'e_x', 'e_elec',
                   'e_hf', 'e_corr', 'e_tot')
     labels = dict(EDAResult.labels, e_hf='E_HF', e_corr='E_corr', e_tot='E_MP2')
+    ref_energy_label = 'MP2 total energy'
 
     def __init__(self, hf_result, e_corr_occ, e_corr_vir, w_occ, e_tot_scf=None):
         hf = hf_result

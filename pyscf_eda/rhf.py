@@ -176,6 +176,7 @@ class EDAResult:
     """
 
     components = ('e_nn', 'e_kin', 'e_ne', 'e_1el', 'e_coul', 'e_x', 'e_elec', 'e_tot')
+    ref_energy_label = 'SCF total energy'
     labels = {
         'e_nn': 'E_NN', 'e_kin': 'T_S', 'e_ne': 'E_Ne', 'e_other': 'E_other',
         'e_1el': 'E_1EL', 'e_coul': 'E_CLB', 'e_x': 'E_X',
@@ -243,7 +244,7 @@ class EDAResult:
             lines.append(line)
         lines.append('-' * len(header))
         if self.e_tot_scf is not None:
-            lines.append(f"SCF total energy        : {self.e_tot_scf:20.10f}")
+            lines.append(f"{self.ref_energy_label:<24}: {self.e_tot_scf:20.10f}")
             lines.append(f"Sum of atomic energies  : {self.e_tot.sum():20.10f}")
             lines.append(f"Difference              : {self.e_tot.sum() - self.e_tot_scf:20.3e}")
         return '\n'.join(lines)
