@@ -38,11 +38,12 @@ def test_required_levels(hf_mol):
 def test_hf_cbs_coefficients():
     c = eda_cbs.hf_cbs_coefficients('largest', ['D', 'T', 'Q'])
     assert c == {'Q': 1.0}
-    c = eda_cbs.hf_cbs_coefficients('karton-martin', ['D', 'T', 'Q'])
-    assert abs(sum(c.values()) - 1.0) < 1e-12
-    assert c['Q'] > 1.0 > 0.0 > c['T']
+    for method in ('karton-martin', 'halkier'):
+        c = eda_cbs.hf_cbs_coefficients(method, ['D', 'T', 'Q'])
+        assert abs(sum(c.values()) - 1.0) < 1e-12
+        assert c['Q'] > 1.0 > 0.0 > c['T']
     with pytest.raises(ValueError):
-        eda_cbs.hf_cbs_coefficients('feller', ['T', 'Q'])
+        eda_cbs.hf_cbs_coefficients('no-such-scheme', ['T', 'Q'])
 
 
 @pytest.fixture(scope='module')
@@ -81,7 +82,8 @@ def test_qtd_linear_combination_matches_independent_calculations(qtd_result, hf_
     # atomic sums reproduce the molecular linear combinations
     assert abs(res.e_corr.sum() - res.e_corr_mol) < 1e-8
     assert abs(res.e_tot.sum() - res.e_tot_mol) < 1e-8
-    assert abs(res.e_hf.sum() - res.hf_mol['Q']) < 1e-8
+    assert abs(res.e_hf.sum() - res.e_hf_mol) < 1e-8
+    assert res.hf_cbs == 'halkier'
     # atomic combination equals coefficient-weighted atomic energies
     manual = sum(c * res.corr[k] for k, c in coeff.items())
     assert numpy.allclose(res.e_corr, manual, atol=1e-12)
@@ -119,6 +121,11 @@ def test_nao_basis_and_explicit_frozen(hf_mol):
     assert abs(res.e_tot.sum() - res.e_tot_mol) < 1e-8
     assert res.eda_results[('MP2', 'Q')].orbital_basis == 'nao'
     assert abs(res.eda_results[('MP2', 'Q')].pop.sum() - 10) < 1e-8
+    res_ao = eda_cbs.CompositeEDA(hf_mol, scheme='QTN', orbital_basis='ao', frozen=1,
+                                  verbose=0).kernel()
+    assert res_ao.eda_results[('MP2', 'Q')].orbital_basis == 'ao'
+    assert abs(res_ao.e_tot_mol - res.e_tot_mol) < 1e-8      # molecular values agree
+    assert not numpy.allclose(res_ao.e_tot, res.e_tot)        # atomic partitions differ
 
 
 def test_bad_inputs(hf_mol):
@@ -133,3 +140,81 @@ def test_bad_inputs(hf_mol):
 def test_summary(qtd_result):
     text = qtd_result.summary()
     assert 'QTD' in text and 'E_corr (CBS)' in text and 'CCSD(T)[DZ]' in text
+
+
+# ---------------------------------------------------------------------------
+# HF energies at the CBS limit
+# ---------------------------------------------------------------------------
+
+def test_hf_cbs_estimate_linear_schemes_are_consistent():
+    rng = numpy.random.default_rng(1)
+    atoms = {x: rng.standard_normal(3) for x in ('D', 'T', 'Q')}
+    mol = {x: float(v.sum()) for x, v in atoms.items()}
+    for method in ('largest', 'karton-martin', 'halkier'):
+        est = eda_cbs.hf_cbs_estimate(method, atoms)
+        assert abs(est.sum() - eda_cbs.hf_cbs_estimate(method, mol)) < 1e-12
+        c = eda_cbs.hf_cbs_coefficients(method, ['D', 'T', 'Q'])
+        assert abs(sum(c.values()) - 1.0) < 1e-12
+    with pytest.raises(ValueError):
+        eda_cbs.hf_cbs_coefficients('feller', ['D', 'T', 'Q'])
+
+
+def test_feller_formula_and_alpha():
+    # exact exponential series E(X) = E_CBS + A exp(-alpha X) is recovered
+    e_cbs, a, alpha = -100.0, 0.5, 1.3
+    e = {x: e_cbs + a * numpy.exp(-alpha * eda_cbs.CARDINAL[x]) for x in ('D', 'T', 'Q')}
+    assert abs(eda_cbs.hf_cbs_estimate('feller', e) - e_cbs) < 1e-10
+    assert abs(eda_cbs.feller_alpha(e) - alpha) < 1e-10
+    # halkier with the exact alpha is exact as well
+    assert abs(eda_cbs.hf_cbs_estimate('halkier', e, alpha=alpha) - e_cbs) < 1e-10
+    # non-monotonic sequence: alpha undefined (nan)
+    e_bad = {'D': -1.0, 'T': -1.2, 'Q': -1.1}
+    assert numpy.isnan(eda_cbs.feller_alpha(e_bad))
+    # element-wise on arrays
+    arr = {x: numpy.array([e[x], e_bad[x]]) for x in e}
+    alpha_arr = eda_cbs.feller_alpha(arr)
+    assert abs(alpha_arr[0] - alpha) < 1e-10 and numpy.isnan(alpha_arr[1])
+
+
+@pytest.fixture(scope='module')
+def hf_cbs_result(hf_mol):
+    return eda_cbs.HFCBS(hf_mol, verbose=0).kernel()
+
+
+def test_hf_cbs_driver(hf_cbs_result, hf_mol):
+    res = hf_cbs_result
+    assert set(res.hf) == {'D', 'T', 'Q'}
+    for x, basis in eda_cbs.BASIS_FAMILIES['cc-pv'].items():
+        mf = scf.RHF(gto.M(atom=HF_ATOM, basis=basis, verbose=0)).run(conv_tol=1e-10)
+        assert abs(res.hf_mol[x] - mf.e_tot) < 1e-8
+        assert abs(res.hf[x].sum() - mf.e_tot) < 1e-8
+    est = res.estimates
+    assert set(est) >= {'largest', 'karton-martin', 'halkier', 'feller', 'feller_alpha'}
+    for method in ('largest', 'karton-martin', 'halkier'):
+        assert abs(est[method]['sum_error']) < 1e-8
+    # linear extrapolations lie below HF/QZ (HF converges from above)
+    assert est['halkier']['mol'] < res.hf_mol['Q']
+    assert est['karton-martin']['mol'] < res.hf_mol['Q']
+    # feller: molecular value sensible, atomic sum generally not equal to it
+    assert est['feller']['mol'] < res.hf_mol['Q']
+    assert numpy.isfinite(est['feller']['mol'])
+    text = res.summary()
+    assert 'HF/CBS feller' in text and 'feller alpha_A' in text
+    assert res.eda_results['Q'].orbital_basis == 'nao'
+
+
+def test_composite_hf_cbs_schemes(hf_mol):
+    for method in ('largest', 'karton-martin', 'halkier', 'feller'):
+        res = eda_cbs.QTN(hf_mol, hf_cbs=method, verbose=0).kernel()
+        est = res.hf_estimates[method]
+        assert numpy.allclose(res.e_hf, est['atoms'], equal_nan=True)
+        assert abs(res.e_hf_mol - est['mol']) < 1e-12
+        if method != 'feller':
+            assert abs(res.e_tot.sum() - res.e_tot_mol) < 1e-8
+            assert res.hf_coeff is not None
+        else:
+            assert res.hf_coeff is None
+            assert abs(res.e_tot.sum() - res.e_tot_mol - res.hf_sum_error) < 1e-8
+        assert 'feller_alpha' in res.hf_estimates
+    with pytest.raises(ValueError):
+        eda_cbs.QTN(hf_mol, hf_cbs='no-such-scheme')

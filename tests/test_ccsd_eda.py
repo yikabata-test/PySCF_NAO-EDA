@@ -114,7 +114,7 @@ def test_against_mo_projector_reference(h2o_ccsd):
 
 def test_frozen_core(h2o_ccsd_frozen):
     mycc = h2o_ccsd_frozen
-    res = eda_ccsd.kernel(mycc)
+    res = eda_ccsd.kernel(mycc, orbital_basis='ao')
     assert abs(res.e_corr.sum() - mycc.e_corr) < 1e-9
     assert abs(res.e_tot.sum() - mycc.e_tot) < 1e-9
     tau = eda_ccsd.effective_amplitudes(mycc.t1, mycc.t2)
@@ -149,7 +149,7 @@ def test_mp2_vs_ccsd_partition_consistency(h2o_ccsd):
     from pyscf import mp
     mycc = h2o_ccsd
     pt = mp.MP2(mycc._scf).run()
-    res_mp2 = eda_mp2.kernel(pt)
+    res_mp2 = eda_mp2.kernel(pt, orbital_basis='ao')
     t1 = numpy.zeros_like(mycc.t1)
     e_occ, e_vir = eda_ccsd.corr_energy_by_atom(mycc, t1=t1, t2=pt.t2)
     assert numpy.allclose(e_occ, res_mp2.e_corr_occ, atol=1e-9)

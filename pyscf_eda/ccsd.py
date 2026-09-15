@@ -127,7 +127,7 @@ class EDA(eda_mp2.EDA):
 
     result_class = CCSDEDAResult
 
-    def __init__(self, mycc, ne_partition='half', orbital_basis='ao', w_occ=1.0,
+    def __init__(self, mycc, ne_partition='half', orbital_basis='nao', w_occ=1.0,
                  with_singles=False):
         self._check_cc(mycc)
         self.with_singles = with_singles
@@ -167,12 +167,12 @@ class EDA(eda_mp2.EDA):
                                    with_singles=self.with_singles, verbose=self.verbose)
 
 
-def kernel(mycc, ne_partition='half', orbital_basis='ao', w_occ=1.0):
+def kernel(mycc, ne_partition='half', orbital_basis='nao', w_occ=1.0):
     """Perform the CCSD-EDA and return a ``CCSDEDAResult``."""
     return EDA(mycc, ne_partition=ne_partition, orbital_basis=orbital_basis, w_occ=w_occ).kernel()
 
 
-def atom_energies(mycc, ne_partition='half', orbital_basis='ao', w_occ=1.0):
+def atom_energies(mycc, ne_partition='half', orbital_basis='nao', w_occ=1.0):
     """Atomic CCSD total energies E_CCSD^A (hartree)."""
     return kernel(mycc, ne_partition, orbital_basis, w_occ).e_tot
 

@@ -87,7 +87,7 @@ class EDA(lib.StreamObject):
         (see ``pyscf_eda.rhf.EDA``).
     orbital_basis : {'ao', 'nao', 'lso', 'lowdin', 'meta_lowdin'} or ndarray
         One-centre orbital basis used for both the HF and the correlation
-        partitions ('ao': conventional EDA, 'nao': NAO-EDA, ...).
+        partitions ('nao': NAO-EDA (default), 'ao': conventional EDA, ...).
     w_occ : float
         Weight of the occupied-orbital partition of the correlation energy;
         w_vir = 1 - w_occ (Eq. 19).  Default 1.0 as adopted in the paper.
@@ -105,7 +105,7 @@ class EDA(lib.StreamObject):
 
     result_class = MP2EDAResult
 
-    def __init__(self, mp, ne_partition='half', orbital_basis='ao', w_occ=1.0):
+    def __init__(self, mp, ne_partition='half', orbital_basis='nao', w_occ=1.0):
         self._check_mp(mp)
         self._mp = mp
         self._scf = mp._scf
@@ -188,12 +188,12 @@ class EDA(lib.StreamObject):
     run = kernel
 
 
-def kernel(mp, ne_partition='half', orbital_basis='ao', w_occ=1.0):
+def kernel(mp, ne_partition='half', orbital_basis='nao', w_occ=1.0):
     """Perform the MP2-EDA and return an ``MP2EDAResult``."""
     return EDA(mp, ne_partition=ne_partition, orbital_basis=orbital_basis, w_occ=w_occ).kernel()
 
 
-def atom_energies(mp, ne_partition='half', orbital_basis='ao', w_occ=1.0):
+def atom_energies(mp, ne_partition='half', orbital_basis='nao', w_occ=1.0):
     """Atomic MP2 total energies E_MP2^A (hartree)."""
     return kernel(mp, ne_partition, orbital_basis, w_occ).e_tot
 

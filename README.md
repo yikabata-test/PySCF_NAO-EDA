@@ -47,13 +47,13 @@ from pyscf_eda import rhf as eda_rhf
 mol = gto.M(atom='O 0 0 0; H 0 0.757 0.586; H 0 -0.757 0.586', basis='cc-pvdz')
 mf = scf.RHF(mol).run()
 
-res = eda_rhf.EDA(mf).kernel()   # 従来型 EDA (または eda_rhf.kernel(mf))
+res = eda_rhf.EDA(mf).kernel()   # NAO-EDA (既定; または eda_rhf.kernel(mf))
 print(res.summary())             # 成分ごとの原子エネルギーの表
 print(res.e_tot)                 # 原子の全エネルギー (numpy 配列, hartree)
+print(res.pop)                   # 自然電荷 (NPA) に対応する原子電子数
 
-res_nao = eda_rhf.EDA(mf, orbital_basis='nao').kernel()   # NAO-EDA (eda_rhf.nao_eda(mf))
+res_ao = eda_rhf.EDA(mf, orbital_basis='ao').kernel()     # 従来型 (Mulliken 型) EDA
 res_lso = eda_rhf.EDA(mf, orbital_basis='lso').kernel()   # LSO-EDA (eda_rhf.lso_eda(mf))
-print(res_nao.pop)               # 自然電荷 (NPA) に対応する原子電子数
 ```
 
 `res` には次の原子ごとの配列 (長さ `mol.natm`, 単位 hartree) が入っています。
@@ -106,12 +106,13 @@ $$E_{TOT} = E_{NN} + T_S + E_{Ne} + E_{CLB} + E_X$$
 $$P' = X^{-1} P X^{-1\dagger},\qquad M' = X^\dagger M X,\qquad
   E^A[M] = \sum_{l\in A}(P'M')_{ll}$$
 
-`orbital_basis` 引数で軌道基底を選びます。
+`orbital_basis` 引数で軌道基底を選びます。**すべての EDA (RHF / MP2 / CCSD / CCSD(T) / CBS) で
+既定は NAO-EDA (`'nao'`) です。**
 
 | `orbital_basis` | 内容 | 対応する population |
 |---|---|---|
-| `'ao'` (既定) | 生の AO ($X=1$)，従来型 EDA | Mulliken (MPA) |
-| `'nao'` | 自然原子軌道 (NAO)，NAO-EDA。`pyscf.lo.nao` の OWSO 変換を使用 | Natural (NPA) |
+| `'nao'` (既定) | 自然原子軌道 (NAO)，NAO-EDA。`pyscf.lo.nao` の OWSO 変換を使用 | Natural (NPA) |
+| `'ao'` | 生の AO ($X=1$)，従来型 (Mulliken 型) EDA | Mulliken (MPA) |
 | `'lso'` / `'lowdin'` | Löwdin 対称直交化 ($X=S^{-1/2}$)，LSO-EDA | Löwdin (LPA) |
 | `'meta_lowdin'` | PySCF の meta-Löwdin 軌道 (参考) | meta-Löwdin |
 | `numpy.ndarray` | 任意の変換行列 $X$ | – |
@@ -147,8 +148,8 @@ from pyscf_eda import mp2 as eda_mp2
 
 mf = scf.RHF(mol).run()
 pt = mp.MP2(mf, frozen=1).run()
-res = eda_mp2.EDA(pt).kernel()                      # 従来型 (AO) 分割
-res = eda_mp2.EDA(pt, orbital_basis='nao').kernel() # NAO 基底での分割
+res = eda_mp2.EDA(pt).kernel()                      # NAO 基底での分割 (既定)
+res = eda_mp2.EDA(pt, orbital_basis='ao').kernel()  # 従来型 (AO) 分割
 print(res.summary())
 print(res.e_hf, res.e_corr, res.e_tot)              # 原子ごとの HF / 相関 / MP2 エネルギー
 ```
@@ -182,8 +183,8 @@ from pyscf import cc
 from pyscf_eda import ccsd as eda_ccsd
 
 mycc = cc.CCSD(mf, frozen=1).run()
-res = eda_ccsd.EDA(mycc).kernel()                      # 従来型 (AO) 分割
-res = eda_ccsd.EDA(mycc, orbital_basis='nao').kernel() # NAO 基底での分割
+res = eda_ccsd.EDA(mycc).kernel()                      # NAO 基底での分割 (既定)
+res = eda_ccsd.EDA(mycc, orbital_basis='ao').kernel()  # 従来型 (AO) 分割
 print(res.summary())
 print(res.e_hf, res.e_corr, res.e_tot)                 # 原子ごとの HF / 相関 / CCSD エネルギー
 ```
@@ -260,10 +261,33 @@ print(res.eda_results) # 各レベルの EDA 結果オブジェクト
 ```
 
 主なオプション: `basis_family='cc-pv' | 'aug-cc-pv'`，`frozen='auto' | int`，
-`orbital_basis='ao' | 'nao' | 'lso'`，`ne_partition`，`w_occ`。
-HF 部分はフィッティングモデルの対象外なので，既定では最大基底 (QZ) の原子 HF エネルギーを用います
-(`hf_cbs='largest'`)。`hf_cbs='karton-martin'` で Karton–Martin の 2 点 (TZ, QZ) HF 外挿
-(エネルギーについて線形) を選べます。
+`orbital_basis='nao' | 'ao' | 'lso'`，`ne_partition`，`w_occ`，`hf_cbs`。
+
+### Hartree–Fock エネルギーの CBS 見積り
+
+HF 部分はフィッティングモデルの対象外なので，途中で得られる DZ, TZ, QZ の HF エネルギーから
+`hf_cbs` で指定した方法で CBS 極限を見積もります。
+
+| `hf_cbs` | 式 | 性質 |
+|---|---|---|
+| `'halkier'` (既定) | 2 点 (TZ, QZ) $E(X)=E_{CBS}+A\,e^{-\alpha X}$，$\alpha=1.63$ 固定 (`hf_alpha`) | エネルギーについて線形 |
+| `'karton-martin'` | 2 点 (TZ, QZ) $E(X)=E_{CBS}+A\,(X+1)e^{-9\sqrt{X}}$ | 線形 |
+| `'feller'` | 3 点 (DZ, TZ, QZ) $E(X)=E_{CBS}+A\,e^{-\alpha X}$，$\alpha$ もフィット: $E_{CBS}=E_Q-(E_Q-E_T)^2/(E_Q-2E_T+E_D)$ | **非線形** |
+| `'largest'` | 外挿なし (QZ の値) | – |
+
+線形な 2 点式は原子ごとに適用しても和が分子の外挿値と一致します。Feller の 3 点式は非線形なので，
+原子ごとに適用すると和が分子の値と一致せず，原子の HF エネルギーが $X$ に対して単調・幾何級数的に
+収束していないとき (例: H2O の H 原子は TZ→QZ で上昇) には分母が小さくなり不安定になります。
+検証のため，結果には全方式の見積り (原子ごと・分子全体)，原子和と分子値の差，
+Feller のフィット指数 $\alpha_A=\ln[(E_T-E_D)/(E_Q-E_T)]$ (単調収束でなければ nan) が
+`res.hf_estimates` に格納され，`summary()` にも表示されます。HF のみを調べるには
+`eda_cbs.HFCBS(mol).kernel()` (または `eda_cbs.hf_cbs(mol)`) を使います。
+
+```python
+hfres = eda_cbs.HFCBS(mol, basis_family='cc-pv').kernel()   # RHF/DZ,TZ,QZ + EDA のみ
+print(hfres.summary())          # 全方式の原子 HF/CBS，原子和 − 分子値，alpha_A
+print(hfres.estimates['feller']['atoms'], hfres.estimates['feller_alpha'])
+```
 
 ## 例
 
@@ -276,6 +300,7 @@ HF 部分はフィッティングモデルの対象外なので，既定では�
 * `examples/h2o_ccsd_eda.py` – H2O の CCSD-EDA (MP2-EDA との比較，NAO 基底，UCCSD 孤立原子との差)
 * `examples/h2o_ccsd_t_eda.py` – H2O の CCSD(T)-EDA ($U^{0,0}$ / $U^{2,2}$，$E_T^{[4]}$ / $E_{ST}^{[5]}$，UCCSD(T) 孤立原子との差)
 * `examples/h2o_cbs_eda.py` – H2O の QDD / QTD による CBS 極限の原子エネルギー
+* `examples/h2o_hf_cbs.py` – H2O の原子 HF エネルギーの CBS 見積り (線形 / 非線形外挿の安定性の検証)
 
 ## 制限事項
 

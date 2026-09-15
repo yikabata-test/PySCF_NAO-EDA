@@ -46,9 +46,9 @@ def test_sum_rules(h2o_mp2, orbital_basis, w_occ):
 
 
 def test_w_occ_interpolation(h2o_mp2):
-    r1 = eda_mp2.kernel(h2o_mp2, w_occ=1.0)
-    r0 = eda_mp2.kernel(h2o_mp2, w_occ=0.0)
-    rh = eda_mp2.kernel(h2o_mp2, w_occ=0.5)
+    r1 = eda_mp2.kernel(h2o_mp2, w_occ=1.0, orbital_basis='ao')
+    r0 = eda_mp2.kernel(h2o_mp2, w_occ=0.0, orbital_basis='ao')
+    rh = eda_mp2.kernel(h2o_mp2, w_occ=0.5, orbital_basis='ao')
     assert numpy.allclose(r1.e_corr, r1.e_corr_occ, atol=1e-12)
     assert numpy.allclose(r0.e_corr, r0.e_corr_vir, atol=1e-12)
     assert numpy.allclose(rh.e_corr, 0.5 * (r1.e_corr_occ + r0.e_corr_vir), atol=1e-12)
@@ -110,7 +110,7 @@ def test_against_mo_projector_reference_nao(h2o_mp2):
 
 def test_frozen_core(h2o_mp2_frozen):
     pt = h2o_mp2_frozen
-    res = eda_mp2.kernel(pt)
+    res = eda_mp2.kernel(pt, orbital_basis='ao')
     assert abs(res.e_corr.sum() - pt.e_corr) < 1e-9
     assert abs(res.e_tot.sum() - pt.e_tot) < 1e-9
     e_occ, e_vir = _reference_partition(pt)
@@ -152,9 +152,9 @@ def test_outcore_integrals():
     mol = gto.M(atom=H2O_ATOM, basis='cc-pvdz', verbose=0)
     mf = scf.RHF(mol).run(conv_tol=1e-12)
     pt = mp.MP2(mf).run()
-    ref = eda_mp2.kernel(pt).e_corr
+    ref = eda_mp2.kernel(pt, orbital_basis='ao').e_corr
     mf._eri = None
-    res = eda_mp2.kernel(pt)
+    res = eda_mp2.kernel(pt, orbital_basis='ao')
     assert numpy.allclose(res.e_corr, ref, atol=1e-9)
 
 

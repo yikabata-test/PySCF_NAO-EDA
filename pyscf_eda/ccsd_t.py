@@ -287,12 +287,12 @@ class EDA(eda_ccsd.EDA):
         return self._e_corr_ref() - self._cc.e_corr
 
 
-def kernel(mycc, ne_partition='half', orbital_basis='ao', w_occ=1.0):
+def kernel(mycc, ne_partition='half', orbital_basis='nao', w_occ=1.0):
     """Perform the CCSD(T)-EDA and return a ``CCSDTEDAResult``."""
     return EDA(mycc, ne_partition=ne_partition, orbital_basis=orbital_basis, w_occ=w_occ).kernel()
 
 
-def atom_energies(mycc, ne_partition='half', orbital_basis='ao', w_occ=1.0):
+def atom_energies(mycc, ne_partition='half', orbital_basis='nao', w_occ=1.0):
     """Atomic CCSD(T) total energies E_CCSD(T)^A (hartree)."""
     return kernel(mycc, ne_partition, orbital_basis, w_occ).e_tot
 

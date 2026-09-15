@@ -41,6 +41,7 @@ def test_sum_rule_each_component(h2o_rhf, ne_partition):
 
 def test_symmetry_equivalent_hydrogens(h2o_rhf):
     res = eda_rhf.kernel(h2o_rhf)
+    assert res.orbital_basis == 'nao'   # NAO-EDA is the default
     for key in res.components:
         vals = getattr(res, key)
         assert abs(vals[1] - vals[2]) < 1e-8, key
@@ -49,7 +50,7 @@ def test_symmetry_equivalent_hydrogens(h2o_rhf):
 def test_signs_and_ordering(h2o_rhf):
     # Same qualitative behaviour as Table 1 of the paper:
     # E_NN, T_S, E_CLB > 0 ; E_Ne, E_X < 0 ; |E_1EL| > E_CLB > E_NN and E_CLB > |E_X|
-    res = eda_rhf.kernel(h2o_rhf)
+    res = eda_rhf.kernel(h2o_rhf, orbital_basis='ao')
     for ia in range(res.mol.natm):
         assert res.e_nn[ia] > 0
         assert res.e_kin[ia] > 0
@@ -63,9 +64,9 @@ def test_signs_and_ordering(h2o_rhf):
 
 
 def test_half_partition_is_mean_of_mulliken_and_nuclear(h2o_rhf):
-    r_half = eda_rhf.kernel(h2o_rhf, ne_partition='half')
-    r_mul = eda_rhf.kernel(h2o_rhf, ne_partition='mulliken')
-    r_nuc = eda_rhf.kernel(h2o_rhf, ne_partition='nuclear')
+    r_half = eda_rhf.kernel(h2o_rhf, ne_partition='half', orbital_basis='ao')
+    r_mul = eda_rhf.kernel(h2o_rhf, ne_partition='mulliken', orbital_basis='ao')
+    r_nuc = eda_rhf.kernel(h2o_rhf, ne_partition='nuclear', orbital_basis='ao')
     assert numpy.allclose(r_half.e_ne, 0.5 * (r_mul.e_ne + r_nuc.e_ne), atol=1e-10)
     # the other components are independent of the scheme
     for key in ('e_nn', 'e_kin', 'e_coul', 'e_x'):
@@ -164,7 +165,7 @@ def test_ao_basis_is_conventional_eda(h2o_rhf):
     mf = h2o_rhf
     mol = mf.mol
     dm = mf.make_rdm1()
-    res = eda_rhf.kernel(mf)
+    res = eda_rhf.kernel(mf, orbital_basis='ao')
     assert res.orbital_basis == 'ao'
     t = mol.intor_symmetric('int1e_kin')
     diag = numpy.einsum('ij,ji->i', dm, t)

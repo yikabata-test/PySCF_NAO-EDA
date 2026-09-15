@@ -55,7 +55,8 @@ one-centre basis {phi_l = sum_m X_{m l} chi_m} instead of the raw AOs:
 
 With X = 1 this is the conventional (Mulliken-type) EDA, with X = S^{-1/2}
 the LSO-EDA, and with the natural atomic orbitals (NAO) the NAO-EDA, which
-has the weakest basis-set dependence.  Select with ``orbital_basis``.
+has the weakest basis-set dependence.  Select with ``orbital_basis``;
+the default is the NAO-EDA ('nao'), the conventional EDA is 'ao'.
 """
 
 import numpy
@@ -183,7 +184,7 @@ class EDAResult:
         'e_elec': 'E_ELC', 'e_tot': 'E_TOT',
     }
 
-    def __init__(self, mol, ne_partition, orbital_basis='ao', **kwargs):
+    def __init__(self, mol, ne_partition, orbital_basis='nao', **kwargs):
         self.mol = mol
         self.ne_partition = ne_partition
         self.orbital_basis = orbital_basis
@@ -268,8 +269,8 @@ class EDA(lib.StreamObject):
     orbital_basis : {'ao', 'nao', 'lso', 'lowdin', 'meta_lowdin'} or ndarray
         One-centre orbital basis in which the basis-function partition is
         carried out.
-        'ao'  (default): raw AOs, conventional (Mulliken-type) EDA.
-        'nao'          : natural atomic orbitals, NAO-EDA (Baba et al. 2006).
+        'nao' (default): natural atomic orbitals, NAO-EDA (Baba et al. 2006).
+        'ao'           : raw AOs, conventional (Mulliken-type) EDA.
         'lso'/'lowdin' : Loewdin symmetrically orthogonalized AOs, LSO-EDA.
         'meta_lowdin'  : PySCF's meta-Loewdin orbitals.
         An explicit (nao, nao) transformation matrix X (phi = chi X) may
@@ -281,12 +282,12 @@ class EDA(lib.StreamObject):
     >>> from pyscf_eda import rhf as eda_rhf
     >>> mol = gto.M(atom='O 0 0 0; H 0 0.76 0.59; H 0 -0.76 0.59', basis='cc-pvdz')
     >>> mf = scf.RHF(mol).run()
-    >>> res = eda_rhf.EDA(mf).kernel()                      # conventional EDA
-    >>> res = eda_rhf.EDA(mf, orbital_basis='nao').kernel() # NAO-EDA
+    >>> res = eda_rhf.EDA(mf).kernel()                      # NAO-EDA (default)
+    >>> res = eda_rhf.EDA(mf, orbital_basis='ao').kernel()  # conventional EDA
     >>> print(res.summary())
     """
 
-    def __init__(self, mf, ne_partition='half', orbital_basis='ao'):
+    def __init__(self, mf, ne_partition='half', orbital_basis='nao'):
         self._check_mf(mf)
         self._scf = mf
         self.mol = mf.mol
@@ -407,12 +408,12 @@ class EDA(lib.StreamObject):
     run = kernel
 
 
-def kernel(mf, ne_partition='half', orbital_basis='ao', dm=None):
+def kernel(mf, ne_partition='half', orbital_basis='nao', dm=None):
     """Perform the EDA for a converged RHF object and return an ``EDAResult``."""
     return EDA(mf, ne_partition=ne_partition, orbital_basis=orbital_basis).kernel(dm=dm)
 
 
-def atom_energies(mf, ne_partition='half', orbital_basis='ao', dm=None):
+def atom_energies(mf, ne_partition='half', orbital_basis='nao', dm=None):
     """Return the atomic total energies E_TOT^A as a numpy array (hartree)."""
     return kernel(mf, ne_partition=ne_partition, orbital_basis=orbital_basis, dm=dm).e_tot
 
