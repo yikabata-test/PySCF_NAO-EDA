@@ -42,6 +42,20 @@ Partitioning schemes
 
   An effective core potential (ECP), if present, is a nucleus-electron
   interaction as well and is treated with the same rule.
+
+Orbital basis (conventional, LSO- and NAO-EDA)
+----------------------------------------------
+T. Baba, M. Takeuchi, H. Nakai, Chem. Phys. Lett. 424, 193 (2006).
+
+The basis-function partition above can be carried out in any orthonormal
+one-centre basis {phi_l = sum_m X_{m l} chi_m} instead of the raw AOs:
+
+    P' = X^{-1} P X^{-1 dagger},   M' = X^dagger M X,
+    E^A[M] = sum_{l in A} (P' M')_{l l}                          (Eqs. 6, 7)
+
+With X = 1 this is the conventional (Mulliken-type) EDA, with X = S^{-1/2}
+the LSO-EDA, and with the natural atomic orbitals (NAO) the NAO-EDA, which
+has the weakest basis-set dependence.  Select with ``orbital_basis``.
 """
 
 import numpy
@@ -49,12 +63,14 @@ from pyscf import lib
 from pyscf import gto
 from pyscf import scf
 from pyscf.lib import logger
+from pyscf_eda import orth
+from pyscf_eda.orth import ORBITAL_BASES
 
 NE_PARTITIONS = ('half', 'mulliken', 'nuclear')
 
 
 def _partial_trace_by_atom(mol, pm):
-    """sum_{mu in A} (P M)_{mu mu} for each atom A, given the matrix product PM."""
+    """sum_{l in A} (P M)_{l l} for each atom A, given the matrix product PM."""
     diag = numpy.einsum('ii->i', pm)
     aoslices = mol.aoslice_by_atom()
     return numpy.array([diag[p0:p1].sum() for _, _, p0, p1 in aoslices])
@@ -63,6 +79,24 @@ def _partial_trace_by_atom(mol, pm):
 def _ao_energy_density(mol, dm, mat):
     """(P M)_{mu mu} summed over the AOs of each atom (Mulliken-type partition)."""
     return _partial_trace_by_atom(mol, dm.dot(mat))
+
+
+class _OrbitalPartition:
+    """Atomic partial traces sum_{l in A} (P' M')_{ll} in the basis phi = chi X.
+
+    P' = X^{-1} P X^{-1 dagger} and M' = X^dagger M X, hence
+    P' M' = X^{-1} (P M) X.  For X = 1 this reduces to the Mulliken-type
+    partition of the conventional EDA.
+    """
+
+    def __init__(self, mol, x):
+        self.mol = mol
+        self.x = x
+        self.xinv = numpy.linalg.inv(x)
+
+    def __call__(self, dm, mat):
+        pm = self.xinv.dot(dm).dot(mat).dot(self.x)
+        return _partial_trace_by_atom(self.mol, pm)
 
 
 def nuc_attraction_by_nucleus(mol):
@@ -134,6 +168,11 @@ class EDAResult:
     e_tot  : total energy              E_TOT^A = E_NN^A + E_ELC^A
     e_other: one-electron terms present in ``mf.get_hcore()`` that are not
              T + V_nuc + V_ecp (e.g. external fields), Mulliken-partitioned.
+    pop    : atomic electron populations sum_{l in A} (P' S')_{ll} in the same
+             orbital basis (Mulliken / Loewdin / natural populations for
+             'ao' / 'lso' / 'nao')
+    orbital_basis : name of the orbital basis ('ao', 'lso', 'nao', ...)
+    orth_coeff    : transformation matrix X used
     """
 
     components = ('e_nn', 'e_kin', 'e_ne', 'e_1el', 'e_coul', 'e_x', 'e_elec', 'e_tot')
@@ -143,9 +182,12 @@ class EDAResult:
         'e_elec': 'E_ELC', 'e_tot': 'E_TOT',
     }
 
-    def __init__(self, mol, ne_partition, **kwargs):
+    def __init__(self, mol, ne_partition, orbital_basis='ao', **kwargs):
         self.mol = mol
         self.ne_partition = ne_partition
+        self.orbital_basis = orbital_basis
+        self.orth_coeff = kwargs.get('orth_coeff')
+        self.pop = kwargs.get('pop')
         self.e_nn = kwargs['e_nn']
         self.e_kin = kwargs['e_kin']
         self.e_ne = kwargs['e_ne']
@@ -186,8 +228,14 @@ class EDAResult:
             f"{f'{mol.atom_symbol(ia)}{ia}':>{width}}" for ia in atoms)
         header += f"{'Sum':>{width}}"
         lines = [
-            f"Energy density analysis (RHF), ne_partition='{self.ne_partition}'",
+            f"Energy density analysis (RHF), orbital_basis='{self.orbital_basis}', "
+            f"ne_partition='{self.ne_partition}'",
             'Energies in hartree', header, '-' * len(header)]
+        if self.pop is not None:
+            line = f"{'Population':<10}" + ''.join(
+                f"{self.pop[ia]:>{width}.5f}" for ia in atoms)
+            line += f"{self.pop.sum():>{width}.5f}"
+            lines += [line, '-' * len(header)]
         for key, values in rows.items():
             line = f"{self.labels[key]:<10}" + ''.join(
                 f"{values[ia]:>{width}.8f}" for ia in atoms)
@@ -216,6 +264,15 @@ class EDA(lib.StreamObject):
         'half' (default): one half by basis functions, one half by nuclei.
         'mulliken'      : entirely by basis functions (original 2002 scheme).
         'nuclear'       : entirely by nuclei.
+    orbital_basis : {'ao', 'nao', 'lso', 'lowdin', 'meta_lowdin'} or ndarray
+        One-centre orbital basis in which the basis-function partition is
+        carried out.
+        'ao'  (default): raw AOs, conventional (Mulliken-type) EDA.
+        'nao'          : natural atomic orbitals, NAO-EDA (Baba et al. 2006).
+        'lso'/'lowdin' : Loewdin symmetrically orthogonalized AOs, LSO-EDA.
+        'meta_lowdin'  : PySCF's meta-Loewdin orbitals.
+        An explicit (nao, nao) transformation matrix X (phi = chi X) may
+        also be given.
 
     Examples
     --------
@@ -223,17 +280,20 @@ class EDA(lib.StreamObject):
     >>> from pyscf_eda import rhf as eda_rhf
     >>> mol = gto.M(atom='O 0 0 0; H 0 0.76 0.59; H 0 -0.76 0.59', basis='cc-pvdz')
     >>> mf = scf.RHF(mol).run()
-    >>> res = eda_rhf.EDA(mf).kernel()
+    >>> res = eda_rhf.EDA(mf).kernel()                      # conventional EDA
+    >>> res = eda_rhf.EDA(mf, orbital_basis='nao').kernel() # NAO-EDA
     >>> print(res.summary())
     """
 
-    def __init__(self, mf, ne_partition='half'):
+    def __init__(self, mf, ne_partition='half', orbital_basis='ao'):
         self._check_mf(mf)
         self._scf = mf
         self.mol = mf.mol
         self.verbose = mf.verbose
         self.stdout = mf.stdout
         self.ne_partition = ne_partition
+        self.orbital_basis = orbital_basis
+        self.orth_coeff = None   # transformation matrix X (built in kernel)
         self.dm = None       # AO density matrix used (default: mf.make_rdm1())
         self.result = None
         self.tol_energy = 1e-8   # tolerance for the sum-rule check
@@ -269,6 +329,22 @@ class EDA(lib.StreamObject):
             raise ValueError('EDA for RHF expects a single (spin-summed) density matrix')
         self.dm = dm
 
+        # --- orbital basis for the basis-function partition ---------------
+        s_mat = mol.intor_symmetric('int1e_ovlp')
+        if isinstance(self.orbital_basis, numpy.ndarray):
+            basis_name = 'custom'
+        else:
+            basis_name = str(self.orbital_basis).lower()
+            if basis_name not in ORBITAL_BASES:
+                raise ValueError(f'orbital_basis must be one of {ORBITAL_BASES} '
+                                 'or a transformation matrix')
+        x = orth.orth_coeff(mol, self.orbital_basis, dm=dm, s=s_mat)
+        if basis_name != 'ao':
+            err = orth.check_orthonormal(x, s_mat)
+            log.debug('orbital basis %s: max |X^T S X - 1| = %.3e', basis_name, err)
+        self.orth_coeff = x
+        partition = _OrbitalPartition(mol, x)
+
         # --- one-electron integrals -------------------------------------
         t_mat = mol.intor_symmetric('int1e_kin')
         v_nuc_atoms = nuc_attraction_by_nucleus(mol)
@@ -288,9 +364,9 @@ class EDA(lib.StreamObject):
 
         # --- energy densities -------------------------------------------
         e_nn = nuc_repulsion_by_atom(mol)
-        e_kin = _ao_energy_density(mol, dm, t_mat)
+        e_kin = partition(dm, t_mat)
 
-        e_ne_ao = _ao_energy_density(mol, dm, v_ne)                     # by basis functions
+        e_ne_ao = partition(dm, v_ne)                                   # by basis functions
         e_ne_nuc = numpy.einsum('ij,aji->a', dm, v_ne_atoms)            # by nuclei
         if self.ne_partition == 'half':
             e_ne = 0.5 * e_ne_ao + 0.5 * e_ne_nuc
@@ -299,15 +375,17 @@ class EDA(lib.StreamObject):
         else:
             e_ne = e_ne_nuc
 
-        e_other = _ao_energy_density(mol, dm, h_other) if has_other else numpy.zeros(mol.natm)
+        e_other = partition(dm, h_other) if has_other else numpy.zeros(mol.natm)
 
         vj, vk = mf.get_jk(mol, dm)
-        e_coul = 0.5 * _ao_energy_density(mol, dm, vj)
-        e_x = -0.25 * _ao_energy_density(mol, dm, vk)
+        e_coul = 0.5 * partition(dm, vj)
+        e_x = -0.25 * partition(dm, vk)
 
-        self.result = EDAResult(mol, self.ne_partition,
+        pop = partition(dm, s_mat)   # Mulliken / Loewdin / natural populations
+
+        self.result = EDAResult(mol, self.ne_partition, basis_name,
                                 e_nn=e_nn, e_kin=e_kin, e_ne=e_ne, e_other=e_other,
-                                e_coul=e_coul, e_x=e_x,
+                                e_coul=e_coul, e_x=e_x, pop=pop, orth_coeff=x,
                                 e_tot_scf=mf.e_tot if mf.converged else None)
 
         # --- sum-rule check ---------------------------------------------
@@ -328,11 +406,21 @@ class EDA(lib.StreamObject):
     run = kernel
 
 
-def kernel(mf, ne_partition='half', dm=None):
+def kernel(mf, ne_partition='half', orbital_basis='ao', dm=None):
     """Perform the EDA for a converged RHF object and return an ``EDAResult``."""
-    return EDA(mf, ne_partition=ne_partition).kernel(dm=dm)
+    return EDA(mf, ne_partition=ne_partition, orbital_basis=orbital_basis).kernel(dm=dm)
 
 
-def atom_energies(mf, ne_partition='half', dm=None):
+def atom_energies(mf, ne_partition='half', orbital_basis='ao', dm=None):
     """Return the atomic total energies E_TOT^A as a numpy array (hartree)."""
-    return kernel(mf, ne_partition=ne_partition, dm=dm).e_tot
+    return kernel(mf, ne_partition=ne_partition, orbital_basis=orbital_basis, dm=dm).e_tot
+
+
+def nao_eda(mf, ne_partition='half', dm=None):
+    """NAO-EDA (Baba, Takeuchi, Nakai 2006) for a converged RHF object."""
+    return kernel(mf, ne_partition=ne_partition, orbital_basis='nao', dm=dm)
+
+
+def lso_eda(mf, ne_partition='half', dm=None):
+    """LSO-EDA (Loewdin symmetric orthogonalization) for a converged RHF object."""
+    return kernel(mf, ne_partition=ne_partition, orbital_basis='lso', dm=dm)

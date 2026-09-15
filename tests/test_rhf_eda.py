@@ -132,3 +132,127 @@ def test_summary_output(h2o_rhf):
     text = res.summary()
     assert 'E_TOT' in text and 'O0' in text and 'H1' in text
     assert 'Difference' in text
+
+
+# ---------------------------------------------------------------------------
+# NAO-EDA / LSO-EDA (Baba, Takeuchi, Nakai, CPL 424, 193 (2006))
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('orbital_basis', ('nao', 'lso', 'lowdin', 'meta_lowdin'))
+def test_orthogonal_basis_sum_rules(h2o_rhf, orbital_basis):
+    mf = h2o_rhf
+    mol = mf.mol
+    dm = mf.make_rdm1()
+    res = eda_rhf.kernel(mf, orbital_basis=orbital_basis)
+    t = mol.intor_symmetric('int1e_kin')
+    v = mol.intor_symmetric('int1e_nuc')
+    vj, vk = mf.get_jk(mol, dm)
+    assert abs(res.e_kin.sum() - numpy.einsum('ij,ji', dm, t)) < 1e-10
+    assert abs(res.e_ne.sum() - numpy.einsum('ij,ji', dm, v)) < 1e-10
+    assert abs(res.e_coul.sum() - 0.5 * numpy.einsum('ij,ji', dm, vj)) < 1e-10
+    assert abs(res.e_x.sum() + 0.25 * numpy.einsum('ij,ji', dm, vk)) < 1e-10
+    assert abs(res.e_tot.sum() - mf.e_tot) < 1e-9
+    assert abs(res.pop.sum() - mol.nelectron) < 1e-10
+    assert abs(res.e_tot[1] - res.e_tot[2]) < 1e-8
+    # transformation matrix is S-orthonormal
+    s = mol.intor_symmetric('int1e_ovlp')
+    assert numpy.allclose(res.orth_coeff.T @ s @ res.orth_coeff, numpy.eye(mol.nao), atol=1e-8)
+
+
+def test_ao_basis_is_conventional_eda(h2o_rhf):
+    # orbital_basis='ao' (default) must be the plain Mulliken-type partition
+    mf = h2o_rhf
+    mol = mf.mol
+    dm = mf.make_rdm1()
+    res = eda_rhf.kernel(mf)
+    assert res.orbital_basis == 'ao'
+    t = mol.intor_symmetric('int1e_kin')
+    diag = numpy.einsum('ij,ji->i', dm, t)
+    ref = [diag[p0:p1].sum() for _, _, p0, p1 in mol.aoslice_by_atom()]
+    assert numpy.allclose(res.e_kin, ref, atol=1e-12)
+    # populations are Mulliken populations
+    pop = scf.hf.mulliken_pop(mol, dm, verbose=0)[0]
+    ref_pop = [pop[p0:p1].sum() for _, _, p0, p1 in mol.aoslice_by_atom()]
+    assert numpy.allclose(res.pop, ref_pop, atol=1e-10)
+
+
+def test_nao_populations_match_pyscf_npa(h2o_rhf):
+    from pyscf.lo import orth as pyscf_orth
+    mf = h2o_rhf
+    mol = mf.mol
+    dm = mf.make_rdm1()
+    s = mol.intor_symmetric('int1e_ovlp')
+    c = pyscf_orth.orth_ao(mf, method='nao', s=s)
+    p_nao = c.T @ s @ dm @ s @ c
+    ref = [p_nao.diagonal()[p0:p1].sum() for _, _, p0, p1 in mol.aoslice_by_atom()]
+    res = eda_rhf.nao_eda(mf)
+    assert numpy.allclose(res.pop, ref, atol=1e-8)
+    assert numpy.allclose(abs(res.orth_coeff), abs(c), atol=1e-8)
+
+
+def test_lso_populations_are_lowdin_populations(h2o_rhf):
+    from pyscf.lo import orth as pyscf_orth
+    mf = h2o_rhf
+    mol = mf.mol
+    dm = mf.make_rdm1()
+    s = mol.intor_symmetric('int1e_ovlp')
+    s_half = numpy.linalg.inv(pyscf_orth.lowdin(s))     # S^{1/2}
+    p_lowdin = s_half @ dm @ s_half
+    ref = [p_lowdin.diagonal()[p0:p1].sum() for _, _, p0, p1 in mol.aoslice_by_atom()]
+    res = eda_rhf.lso_eda(mf)
+    assert numpy.allclose(res.pop, ref, atol=1e-8)
+
+
+def test_nao_eda_formula_eq6_eq7(h2o_rhf):
+    # E_KIN^{NAO,A} = sum_{l in A} {(X^-1 P X^-1^T)(X^T T X)}_ll   (Eqs. 6, 7)
+    mf = h2o_rhf
+    mol = mf.mol
+    dm = mf.make_rdm1()
+    res = eda_rhf.nao_eda(mf)
+    x = res.orth_coeff
+    xinv = numpy.linalg.inv(x)
+    p_nao = xinv @ dm @ xinv.T
+    t_nao = x.T @ mol.intor_symmetric('int1e_kin') @ x
+    diag = numpy.einsum('ij,ji->i', p_nao, t_nao)
+    ref = [diag[p0:p1].sum() for _, _, p0, p1 in mol.aoslice_by_atom()]
+    assert numpy.allclose(res.e_kin, ref, atol=1e-10)
+
+
+def test_custom_transformation_matrix(h2o_rhf):
+    from pyscf.lo import orth as pyscf_orth
+    mol = h2o_rhf.mol
+    x = pyscf_orth.lowdin(mol.intor_symmetric('int1e_ovlp'))
+    res_custom = eda_rhf.kernel(h2o_rhf, orbital_basis=x)
+    res_lso = eda_rhf.lso_eda(h2o_rhf)
+    assert res_custom.orbital_basis == 'custom'
+    assert numpy.allclose(res_custom.e_tot, res_lso.e_tot, atol=1e-10)
+    with pytest.raises(ValueError):
+        eda_rhf.kernel(h2o_rhf, orbital_basis='no-such-basis')
+
+
+def test_nao_eda_weak_basis_set_dependence():
+    # C atom in CO2 (R = 1.16 A): the NAO-EDA energy fraction should be
+    # nearly basis-set independent (cf. Table 2 of the 2006 paper).
+    fractions = {'ao': [], 'lso': [], 'nao': []}
+    for basis in ('6-31g', 'cc-pvdz', 'aug-cc-pvdz'):
+        mol = gto.M(atom='C 0 0 0; O 0 0 1.16; O 0 0 -1.16', basis=basis, verbose=0)
+        mf = scf.RHF(mol).run(conv_tol=1e-10)
+        for key in fractions:
+            res = eda_rhf.kernel(mf, orbital_basis=key)
+            assert abs(res.e_tot.sum() - mf.e_tot) < 1e-8
+            fractions[key].append(100 * res.e_tot[0] / mf.e_tot)
+    nao = numpy.array(fractions['nao'])
+    assert nao.max() - nao.min() < 0.15
+    assert 20.6 < nao.mean() < 21.1
+    # LSO-EDA shows the known outlier with diffuse functions
+    lso = numpy.array(fractions['lso'])
+    assert lso.max() - lso.min() > nao.max() - nao.min()
+
+
+def test_single_atom_gets_total_energy():
+    mol = gto.M(atom='Ne 0 0 0', basis='cc-pvdz', verbose=0)
+    mf = scf.RHF(mol).run(conv_tol=1e-11)
+    for key in ('ao', 'lso', 'nao'):
+        res = eda_rhf.kernel(mf, orbital_basis=key)
+        assert abs(res.e_tot[0] - mf.e_tot) < 1e-9
+        assert abs(res.pop[0] - 10) < 1e-10

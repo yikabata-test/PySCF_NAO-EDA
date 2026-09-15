@@ -5,10 +5,12 @@ EDA partitions the total energy of a molecule into atomic energies
 
 Currently implemented
 ---------------------
-* ``pyscf_eda.rhf`` : closed-shell (restricted) Hartree-Fock
+* ``pyscf_eda.rhf``  : closed-shell (restricted) Hartree-Fock; conventional, LSO- and NAO-EDA
+* ``pyscf_eda.orth`` : orthogonal one-centre bases (NAO, Loewdin) used by NAO-/LSO-EDA
 """
 
 __version__ = '0.1.0'
 
 from pyscf_eda import rhf  # noqa: F401
-from pyscf_eda.rhf import EDA, EDAResult, kernel, atom_energies  # noqa: F401
+from pyscf_eda import orth  # noqa: F401
+from pyscf_eda.rhf import EDA, EDAResult, kernel, atom_energies, nao_eda, lso_eda  # noqa: F401
