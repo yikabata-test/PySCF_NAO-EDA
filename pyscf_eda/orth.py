@@ -27,6 +27,8 @@ Available bases
                 orthogonalization of the Rydberg set (NRB) to the NMB and
                 OWSO of the NRB.  Reproduces the NAO-EDA numbers of Baba et
                 al. (2006) for CO2 to a few mhartree.
+'nao:post', 'nao:lowdin' : 'nao' with the other Rydberg-set weightings
+                (see ``nao_coeff``); 'nao' is 'nao:pre'
 'nao_pyscf'   : the NAO variant of ``pyscf.lo.nao`` (Loewdin for the core
                 set, OWSO for the valence set with the core projected out,
                 Loewdin for the Rydberg set).  Kept for reference; it differs
@@ -79,12 +81,13 @@ def orth_coeff(mol, method='nao', dm=None, s=None):
     if method in ('lso', 'lowdin'):
         # plain S^{-1/2} (no projection onto a reference AO basis)
         return pyscf_orth.lowdin(s)
-    if method in ('nao', 'nao_pyscf'):
+    if method in ('nao', 'nao_pyscf') or method.startswith('nao:'):
         if dm is None:
             raise ValueError(f"a density matrix is required for method='{method}'")
-        if method == 'nao':
-            return nao_coeff(mol, dm, s)
-        return nao_coeff_pyscf(mol, dm, s)
+        if method == 'nao_pyscf':
+            return nao_coeff_pyscf(mol, dm, s)
+        nrb = method.split(':', 1)[1] if ':' in method else 'pre'
+        return nao_coeff(mol, dm, s, nrb_weights=nrb)
     if method == 'meta_lowdin':
         return pyscf_orth.orth_ao(mol, method='meta_lowdin', s=s)
     raise ValueError(f"unknown orbital basis '{method}'; choose from {ORBITAL_BASES} "
@@ -105,8 +108,18 @@ def _fix_phase(c):
     return c
 
 
-def nao_coeff(mol, dm, s=None, min_weight=OWSO_MIN_WEIGHT):
+NRB_WEIGHTS = ('pre', 'post', 'lowdin')
+
+
+def nao_coeff(mol, dm, s=None, min_weight=OWSO_MIN_WEIGHT, nrb_weights='pre'):
     """NAO transformation matrix (Reed-Weinstock-Weinhold procedure).
+
+    ``nrb_weights`` selects the OWSO weights of the Rydberg set (NRB) after
+    its Schmidt orthogonalization to the NMB, a detail that the NAO-EDA
+    papers do not specify and that changes the NAO-EDA atomic energies by
+    up to ~0.2 hartree with polarized/diffuse basis sets:
+    'pre' (default): pre-NAO occupancies; 'post': diagonal occupancies of
+    the Schmidt-projected NRB functions; 'lowdin': equal weights.
 
     Steps
     -----
@@ -144,7 +157,16 @@ def nao_coeff(mol, dm, s=None, min_weight=OWSO_MIN_WEIGHT):
             cn = c[:, nmb]
             cr -= lib.dot(cn, lib.dot(lib.dot(cn.T, s), cr))      # Schmidt to NMB
         s1 = lib.dot(lib.dot(cr.T, s), cr)
-        c[:, ryd_lst] = lib.dot(cr, pyscf_orth.weight_orth(s1, weights[ryd_lst]))
+        if nrb_weights == 'pre':
+            w_ryd = weights[ryd_lst]
+        elif nrb_weights == 'post':
+            p1 = lib.dot(lib.dot(cr.T, p), cr)
+            w_ryd = numpy.maximum(numpy.einsum('ii->i', p1) / numpy.einsum('ii->i', s1), min_weight)
+        elif nrb_weights == 'lowdin':
+            w_ryd = numpy.ones(len(ryd_lst))
+        else:
+            raise ValueError(f'nrb_weights must be one of {NRB_WEIGHTS}')
+        c[:, ryd_lst] = lib.dot(cr, pyscf_orth.weight_orth(s1, w_ryd))
     # remove round-off from the weighted orthogonalizations
     c = lib.dot(c, pyscf_orth.lowdin(lib.dot(lib.dot(c.T, s), c)))
     if not mol.cart:

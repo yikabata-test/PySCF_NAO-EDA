@@ -619,7 +619,7 @@ class EDA(lib.StreamObject):
             basis_name = 'custom'
         else:
             basis_name = str(self.orbital_basis).lower()
-            if basis_name not in ORBITAL_BASES:
+            if basis_name not in ORBITAL_BASES and not basis_name.startswith('nao:'):
                 raise ValueError(f'orbital_basis must be one of {ORBITAL_BASES} '
                                  'or a transformation matrix')
         x = orth.orth_coeff(mol, self.orbital_basis, dm=dm, s=s_mat)

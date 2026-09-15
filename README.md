@@ -167,6 +167,11 @@ Grid-EDA の J, K は各グリッド点の静電ポテンシャル積分 (`int1e
   低くなりますが，Reed–Weinstock–Weinhold の手順 (NMB を一括 OWSO，NRB を Schmidt 直交化後 OWSO;
   本パッケージの `'nao'`) では論文と数十 mhartree 以内で一致します (NPA 4.96 vs 4.98)。
   基底系列全体の比較は `examples/co2_b3lyp_2006.py` を参照してください。
+  残る差は Rydberg 集合 (NRB) の直交化の重み付けなど論文に記載のない NAO 構成の細部に由来し，
+  `orbital_basis='nao:pre'` (既定; pre-NAO 占有数を重み), `'nao:post'` (Schmidt 直交化後の対角占有数),
+  `'nao:lowdin'` (等重み) で比較できます。CO2 (B3LYP5, GAMESS 分割) の C 原子エネルギーの論文との差は
+  例えば cc-pVDZ で +0.054 / −0.019 / −0.072，6-31G で +0.114 / −0.005 / −0.122，
+  aug-cc-pVTZ で +0.277 / +0.171 / −0.048 hartree で，全基底を同時に再現する重み付けはありません。
 
 ## NAO-EDA / LSO-EDA (軌道基底の選択)
 

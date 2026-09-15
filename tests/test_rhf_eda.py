@@ -278,3 +278,19 @@ def test_single_atom_gets_total_energy():
         res = eda_rhf.kernel(mf, orbital_basis=key)
         assert abs(res.e_tot[0] - mf.e_tot) < 1e-9
         assert abs(res.pop[0] - 10) < 1e-10
+
+
+def test_nao_rydberg_weight_variants(h2o_rhf):
+    from pyscf_eda import orth
+    mf = h2o_rhf
+    res = {}
+    for name in ('nao', 'nao:pre', 'nao:post', 'nao:lowdin'):
+        r = eda_rhf.kernel(mf, orbital_basis=name)
+        assert abs(r.e_tot.sum() - mf.e_tot) < 1e-9
+        assert abs(r.pop.sum() - mf.mol.nelectron) < 1e-9
+        res[name] = r
+    assert numpy.allclose(res['nao'].e_tot, res['nao:pre'].e_tot, atol=1e-12)
+    assert not numpy.allclose(res['nao:pre'].e_tot, res['nao:post'].e_tot, atol=1e-4)
+    assert not numpy.allclose(res['nao:pre'].e_tot, res['nao:lowdin'].e_tot, atol=1e-4)
+    with pytest.raises(ValueError):
+        orth.nao_coeff(mf.mol, mf.make_rdm1(), nrb_weights='no-such')
