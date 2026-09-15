@@ -62,8 +62,20 @@ def active_orbitals(obj):
     return mo_coeff[:, :nocc], mo_coeff[:, nocc:]
 
 
-def partition_doubles(mol, transform, c_occ, c_vir, tau, x=None, verbose=None):
+def partition_doubles(mol, transform, c_occ, c_vir, tau, x=None, verbose=None,
+                      max_memory=None):
     """Occupied- and virtual-side atomic partitions of sum (ia|jb)(2 tau_ijab - tau_ijba).
+
+    The integrals are generated as (j b|l p) with the cheap (occupied,
+    virtual) pair transformed first, l running over all one-centre orbitals
+    and p over the active occupied and virtual orbitals (cost N^4 o / 2 +
+    o v N^3, the same order as the (ia|jb) transformation of MP2 itself),
+    in as few blocks of occupied orbitals j as ``max_memory`` (default
+    ``mol.max_memory``) allows.  They are contracted with the amplitudes
+    into Y_li = sum (la|jb) tbar_ijab and Z_la = sum (il|jb) tbar_ijab, from
+    which the per-orbital contributions e_l = sum_i C'_li Y_li (occupied
+    side) and sum_a C'_la Z_la (virtual side) are summed over the orbitals
+    of every atom.
 
     Parameters
     ----------
@@ -95,22 +107,38 @@ def partition_doubles(mol, transform, c_occ, c_vir, tau, x=None, verbose=None):
     xinv = numpy.linalg.inv(x)
     cp_occ = xinv.dot(c_occ)        # C' = X^{-1} C
     cp_vir = xinv.dot(c_vir)
+    c_act = numpy.hstack((c_occ, c_vir))
+    nmo = nocc + nvir
+
+    if max_memory is None:
+        max_memory = mol.max_memory
+    mem_per_j = nvir * nao * nmo * 8 / 1e6                # one (j b|l p) slab (MB)
+    mem_work = nvir * nao * nvir * 8 / 1e6 * 1.5          # transposed slab + slack
+    avail = max_memory - lib.current_memory()[0] - mem_work
+    blk = int(max(1, min(nocc, avail // max(mem_per_j, 1e-6))))
+    log.debug('partition_doubles: %d occupied orbitals per block (%.0f MB each)',
+              blk, blk * mem_per_j)
+
+    y = numpy.zeros((nao, nocc))      # Y_li = sum_{ajb} (la|jb) tbar_ijab
+    z = numpy.zeros((nao, nvir))      # Z_la = sum_{ijb} (il|jb) tbar_ijab
+    for j0, j1 in lib.prange(0, nocc, blk):
+        nj = j1 - j0
+        eri = transform((c_occ[:, j0:j1], c_vir, x, c_act)).reshape(nj, nvir, nao, nmo)
+        for j in range(nj):
+            t_j = tbar[:, j0 + j]                                            # [i, a, b]
+            e_la = numpy.ascontiguousarray(eri[j, :, :, nocc:].transpose(1, 2, 0))  # [l, a, b]
+            y += e_la.reshape(nao, -1).dot(t_j.reshape(nocc, -1).T)
+            e_li = numpy.ascontiguousarray(eri[j, :, :, :nocc].transpose(1, 2, 0))  # [l, i, b]
+            z += e_li.reshape(nao, -1).dot(t_j.transpose(0, 2, 1).reshape(-1, nvir))
+        eri = e_la = e_li = None
+    e_l_occ = numpy.einsum('li,li->l', cp_occ, y)
+    e_l_vir = numpy.einsum('la,la->l', cp_vir, z)
 
     e_occ = numpy.zeros(mol.natm)
     e_vir = numpy.zeros(mol.natm)
     for ia, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
-        if p1 == p0:
-            continue
-        x_a = x[:, p0:p1]
-        na = p1 - p0
-        # occupied side: (l a|j b), l in A
-        eri = transform((x_a, c_vir, c_occ, c_vir)).reshape(na, nvir, nocc, nvir)
-        w = lib.einsum('li,ijab->lajb', cp_occ[p0:p1], tbar)
-        e_occ[ia] = numpy.einsum('lajb,lajb->', w, eri)
-        # virtual side: (i l|j b), l in A
-        eri = transform((c_occ, x_a, c_occ, c_vir)).reshape(nocc, na, nocc, nvir)
-        w = lib.einsum('la,ijab->iljb', cp_vir[p0:p1], tbar)
-        e_vir[ia] = numpy.einsum('iljb,iljb->', w, eri)
+        e_occ[ia] = e_l_occ[p0:p1].sum()
+        e_vir[ia] = e_l_vir[p0:p1].sum()
         log.debug1('atom %d  E_corr(occ) = %.10f  E_corr(vir) = %.10f',
                    ia, e_occ[ia], e_vir[ia])
     return e_occ, e_vir

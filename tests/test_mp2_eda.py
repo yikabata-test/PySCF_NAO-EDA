@@ -177,3 +177,33 @@ def test_rejects_ump2():
 def test_summary(h2o_mp2):
     text = eda_mp2.kernel(h2o_mp2).summary()
     assert 'E_HF' in text and 'E_corr' in text and 'E_MP2' in text and 'MP2, w_occ=1' in text
+
+
+def test_partition_doubles_matches_per_atom_reference():
+    """Blocked single transformation == per-atom transformation of the 2008 paper's formula."""
+    from pyscf import lib
+    from pyscf_eda import corr, orth
+    mol = gto.M(atom='O 0 0 0; H 0 0.757 0.586; H 0 -0.757 0.586', basis='cc-pvdz', verbose=0)
+    mf = scf.RHF(mol).run(conv_tol=1e-10)
+    pt = mp.MP2(mf, frozen=1).run()
+    c_occ, c_vir = corr.active_orbitals(pt)
+    transform = corr.eri_transformer(pt)
+    tbar = 2.0 * pt.t2 - pt.t2.transpose(0, 1, 3, 2)
+    nocc, nvir = c_occ.shape[1], c_vir.shape[1]
+    for ob in ('ao', 'nao'):
+        x = numpy.eye(mol.nao) if ob == 'ao' else orth.orth_coeff(mol, ob, mf.make_rdm1(), mf.get_ovlp())
+        xinv = numpy.linalg.inv(x)
+        cp_occ, cp_vir = xinv @ c_occ, xinv @ c_vir
+        ref_occ, ref_vir = numpy.zeros(mol.natm), numpy.zeros(mol.natm)
+        for ia, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
+            x_a = x[:, p0:p1]
+            eri = transform((x_a, c_vir, c_occ, c_vir)).reshape(p1 - p0, nvir, nocc, nvir)
+            ref_occ[ia] = numpy.einsum('li,lajb,ijab->', cp_occ[p0:p1], eri, tbar)
+            eri = transform((c_occ, x_a, c_occ, c_vir)).reshape(nocc, p1 - p0, nocc, nvir)
+            ref_vir[ia] = numpy.einsum('la,iljb,ijab->', cp_vir[p0:p1], eri, tbar)
+        for max_memory in (None, lib.current_memory()[0] + 1):   # one block / one orbital per block
+            e_occ, e_vir = corr.partition_doubles(mol, transform, c_occ, c_vir, pt.t2, x,
+                                                  max_memory=max_memory)
+            assert numpy.allclose(e_occ, ref_occ, atol=1e-12)
+            assert numpy.allclose(e_vir, ref_vir, atol=1e-12)
+            assert abs(e_occ.sum() - pt.e_corr) < 1e-10 and abs(e_vir.sum() - pt.e_corr) < 1e-10
