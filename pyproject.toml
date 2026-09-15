@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyscf-eda"
+version = "0.1.0"
+description = "Energy density analysis (EDA) of atomic energies on top of PySCF"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "numpy",
+    "pyscf>=2.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["pyscf_eda*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
