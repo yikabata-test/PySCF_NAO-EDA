@@ -12,6 +12,8 @@ paper.
 
 from pyscf import gto
 from pyscf_eda import cbs as eda_cbs
+import numpy
+numpy.set_printoptions(precision=10, floatmode='fixed', suppress=True, linewidth=200)
 
 mol = gto.M(
     atom='''
@@ -25,14 +27,14 @@ res_qtd = eda_cbs.QTD(mol).kernel()
 print(res_qtd.summary())
 
 res_qdd = eda_cbs.QDD(mol).kernel()
-print('\nQDD atomic CBS correlation energies :', res_qdd.e_corr.round(6))
-print('QTD atomic CBS correlation energies :', res_qtd.e_corr.round(6))
-print('QDD / QTD molecular E_corr(CBS)      : %.6f / %.6f' % (res_qdd.e_corr_mol, res_qtd.e_corr_mol))
-print('CCSD(T)/cc-pVDZ E_corr for reference : %.6f' % res_qtd.corr_mol[('CCSD(T)', 'D')])
+print('\nQDD atomic CBS correlation energies :', res_qdd.e_corr.round(10))
+print('QTD atomic CBS correlation energies :', res_qtd.e_corr.round(10))
+print('QDD / QTD molecular E_corr(CBS)      : %.10f / %.10f' % (res_qdd.e_corr_mol, res_qtd.e_corr_mol))
+print('CCSD(T)/cc-pVDZ E_corr for reference : %.10f' % res_qtd.corr_mol[('CCSD(T)', 'D')])
 
 # conventional (AO) partition instead of the default NAO-EDA, and the HF part
 # taken from the largest basis set instead of the default Halkier extrapolation
 res_ao = eda_cbs.QTD(mol, orbital_basis='ao', hf_cbs='largest').kernel()
-print('\nQTD (AO partition, HF/QZ) atomic energies:', res_ao.e_tot.round(6))
-print('HF/CBS estimates (molecular):', {k: round(v['mol'], 6) for k, v in res_qtd.hf_estimates.items()
+print('\nQTD (AO partition, HF/QZ) atomic energies:', res_ao.e_tot.round(10))
+print('HF/CBS estimates (molecular):', {k: round(v['mol'], 10) for k, v in res_qtd.hf_estimates.items()
                                         if isinstance(v, dict)})

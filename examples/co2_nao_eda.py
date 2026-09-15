@@ -11,6 +11,8 @@ percentage of the total energy.
 import numpy
 from pyscf import gto, scf
 from pyscf_eda import rhf as eda_rhf
+import numpy
+numpy.set_printoptions(precision=10, floatmode='fixed', suppress=True, linewidth=200)
 
 BASES = ['sto-3g', '6-31g', '6-31g(d)', '6-31+g(d)', '6-311+g(2d)',
          'cc-pvdz', 'cc-pvtz', 'aug-cc-pvdz', 'aug-cc-pvtz']
@@ -29,7 +31,7 @@ for basis in BASES:
         fracs.append(100 * res.e_tot[0] / mf.e_tot)
         fractions[key].append(fracs[-1])
     print(f"{basis:<14}" + ''.join(f"{p:>14.3f}" for p in pops)
-          + ''.join(f"{f:>14.2f}" for f in fracs) + f"{mf.e_tot:>14.5f}")
+          + ''.join(f"{f:>14.2f}" for f in fracs) + f"{mf.e_tot:>18.10f}")
 
 print()
 for key, name in SCHEMES:

@@ -38,8 +38,8 @@ PAPER = {
     'aug-cc-pvtz': (4.419, 6.281, 5.029, -37.18110, -37.70634, -39.30588, -188.58439),
 }
 
-print(f"{'basis':<13}{'E_total':>12}{'dE':>8} | {'MPA':>6}{'LPA':>6}{'NPA':>6} | "
-      f"{'EDA':>10}{'dEDA':>8}{'LSO':>10}{'dLSO':>8}{'NAO':>10}{'dNAO':>8}   (d = this - paper)")
+print(f"{'basis':<13}{'E_total':>17}{'dE':>15} | {'MPA':>6}{'LPA':>6}{'NPA':>6} | "
+      f"{'EDA':>16}{'dEDA':>15}{'LSO':>16}{'dLSO':>15}{'NAO':>16}{'dNAO':>15}   (d = this - paper)")
 for basis, ref in PAPER.items():
     try:
         mol = gto.M(atom='C 0 0 0; O 0 0 1.16; O 0 0 -1.16', basis=basis, cart=True, verbose=0)
@@ -53,8 +53,8 @@ for basis, ref in PAPER.items():
     for ob in ('ao', 'lso', 'nao'):
         r = eda_rhf.kernel(mf, orbital_basis=ob, ne_partition='half')
         out[ob] = (r.pop[0], r.e_tot[0])
-    print(f"{basis:<13}{mf.e_tot:>12.5f}{mf.e_tot-ref[6]:>8.4f} | "
+    print(f"{basis:<13}{mf.e_tot:>17.10f}{mf.e_tot-ref[6]:>15.10f} | "
           f"{out['ao'][0]:>6.3f}{out['lso'][0]:>6.3f}{out['nao'][0]:>6.3f} | "
-          f"{out['ao'][1]:>10.5f}{out['ao'][1]-ref[3]:>8.4f}"
-          f"{out['lso'][1]:>10.5f}{out['lso'][1]-ref[4]:>8.4f}"
-          f"{out['nao'][1]:>10.5f}{out['nao'][1]-ref[5]:>8.4f}")
+          f"{out['ao'][1]:>16.10f}{out['ao'][1]-ref[3]:>15.10f}"
+          f"{out['lso'][1]:>16.10f}{out['lso'][1]-ref[4]:>15.10f}"
+          f"{out['nao'][1]:>16.10f}{out['nao'][1]-ref[5]:>15.10f}")

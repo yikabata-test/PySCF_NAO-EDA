@@ -16,6 +16,8 @@ B3LYP5 calculations of the ground-state atoms.
 import numpy
 from pyscf import gto, dft
 from pyscf_eda import rhf as eda_rhf
+import numpy
+numpy.set_printoptions(precision=10, floatmode='fixed', suppress=True, linewidth=200)
 
 HARTREE2KCAL = 627.5095
 BASIS = '6-31g(d,p)'
@@ -60,10 +62,10 @@ def atom_energy(symb):
 
 
 e_atom = {symb: atom_energy(symb) for symb in ATOM_SPIN}
-print('isolated-atom energies (UKS B3LYP5):', {k: round(v, 5) for k, v in e_atom.items()})
-print(f"\n{'':11}{'':3}{'q(Mull)':>15}{'q(Grid)':>15}{'E(Mull)':>21}{'E(Grid)':>21}{'E(conv)':>21}")
+print('isolated-atom energies (UKS B3LYP5):', {k: round(v, 10) for k, v in e_atom.items()})
+print(f"\n{'':11}{'':3}{'q(Mull)':>15}{'q(Grid)':>15}{'E(Mull)':>28}{'E(Grid)':>28}{'E(conv)':>28}")
 print(f"{'':14}" + ''.join(f"{'this':>8}{'paper':>7}" for _ in range(2))
-      + ''.join(f"{'this':>11}{'paper':>10}" for _ in range(3)))
+      + ''.join(f"{'this':>18}{'paper':>10}" for _ in range(3)))
 for name, (atom, sites) in MOLECULES.items():
     mol = gto.M(atom=atom, basis=BASIS, cart=True, verbose=0)
     mf = dft.RKS(mol, xc='B3LYP5')
@@ -72,14 +74,14 @@ for name, (atom, sites) in MOLECULES.items():
     r_mull = eda_rhf.mulliken_eda(mf, orbital_basis='ao')
     r_grid = eda_rhf.grid_eda(mf)
     r_conv = eda_rhf.kernel(mf, orbital_basis='ao')
-    print(f"{name:<11} E_total = {mf.e_tot:.5f}")
+    print(f"{name:<11} E_total = {mf.e_tot:.10f}")
     for symb, ia in sites.items():
         p = PAPER[(name, symb)]
         vals = (r_mull.pop[ia], p[0], r_grid.pop[ia], p[1],
                 r_mull.e_tot[ia], p[2], r_grid.e_tot[ia], p[3], r_conv.e_tot[ia], p[4])
         line = f"{'':11}{symb:<3}" + ''.join(f"{vals[2*i]:>8.2f}{vals[2*i+1]:>7.2f}" for i in range(2))
-        line += ''.join(f"{vals[4+2*i]:>11.3f}{vals[5+2*i]:>10.3f}" for i in range(3))
+        line += ''.join(f"{vals[4+2*i]:>18.10f}{vals[5+2*i]:>10.3f}" for i in range(3))
         print(line)
         d = [-(r.e_tot[ia] - e_atom[symb]) * HARTREE2KCAL for r in (r_mull, r_grid, r_conv)]
-        print(f"{'':14}Delta E (kcal/mol)  Mull {d[0]:7.1f} ({p[5][0]:6.1f})   "
-              f"Grid {d[1]:7.1f} ({p[5][1]:6.1f})   conv {d[2]:7.1f} ({p[5][2]:6.1f})")
+        print(f"{'':14}Delta E (kcal/mol)  Mull {d[0]:16.10f} ({p[5][0]:6.1f})   "
+              f"Grid {d[1]:16.10f} ({p[5][1]:6.1f})   conv {d[2]:16.10f} ({p[5][2]:6.1f})")

@@ -47,9 +47,9 @@ mine = {'E_NN': res.e_nn, 'T_S': res.e_kin, 'E_Ne': res.e_ne, 'E_1EL': res.e_1el
         'E_X^EXC': e_x_hf, 'E_X^SLT': slater, 'E_X^B88': b88, 'E_X': e_x, 'E_C^VWN': vwn,
         'E_C^LYP': lyp, 'E_C': e_c, 'E_ELC': res.e_elec, 'E_TOT': res.e_tot}
 
-print(f"{'Component':<9}{'H (this)':>13}{'H (paper)':>12}{'O (this)':>14}{'O (paper)':>12}{'H2O (this)':>14}{'H2O (paper)':>12}")
+print(f"{'Component':<9}{'H (this)':>18}{'H (paper)':>12}{'O (this)':>18}{'O (paper)':>12}{'H2O (this)':>18}{'H2O (paper)':>12}")
 for key, (ph, po, pt) in paper.items():
     v = mine[key]
-    print(f"{key:<9}{v[1]:>13.5f}{ph:>12.5f}{v[0]:>14.5f}{po:>12.5f}{v.sum():>14.5f}{pt:>12.5f}")
+    print(f"{key:<9}{v[1]:>13.5f}{ph:>12.5f}{v[0]:>18.10f}{po:>12.5f}{v.sum():>18.10f}{pt:>12.5f}")
 print(f"\nmax |this - paper| over all entries: "
       f"{max(max(abs(mine[k][1]-ph), abs(mine[k][0]-po), abs(mine[k].sum()-pt)) for k,(ph,po,pt) in paper.items()):.2e} hartree")

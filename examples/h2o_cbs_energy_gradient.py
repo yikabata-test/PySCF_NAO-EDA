@@ -11,6 +11,8 @@ equations of PySCF (pyscf_eda.grad.ccsd_t_gradient).
 
 from pyscf import gto
 from pyscf_eda import cbs as eda_cbs
+import numpy
+numpy.set_printoptions(precision=10, floatmode='fixed', suppress=True, linewidth=200)
 
 mol = gto.M(
     atom='''
@@ -24,9 +26,9 @@ for scheme in ('QDD', 'QTD'):
     res = eda_cbs.CompositeEDA(mol, scheme=scheme, with_grad=True).kernel()
     print(res.summary())
     print()
-    print(f'{scheme}: atomic CCSD(T)/CBS energies (hartree):', res.e_tot.round(6))
+    print(f'{scheme}: atomic CCSD(T)/CBS energies (hartree):', res.e_tot.round(10))
     print(f'{scheme}: CBS gradient (hartree/bohr):')
-    print(res.grad.round(6))
+    print(res.grad.round(10))
     print('per-level gradients available in res.grads, e.g. CCSD(T)/DZ:')
-    print(res.grads[('CCSD(T)', 'D')].round(6))
+    print(res.grads[('CCSD(T)', 'D')].round(10))
     print()

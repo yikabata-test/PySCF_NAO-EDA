@@ -484,7 +484,7 @@ class EDAResult:
             atoms = range(mol.natm)
         atoms = list(atoms)
         rows = self.as_dict()
-        width = 16
+        width = 18
         header = f"{'Component':<10}" + ''.join(
             f"{f'{mol.atom_symbol(ia)}{ia}':>{width}}" for ia in atoms)
         header += f"{'Sum':>{width}}"
@@ -502,13 +502,13 @@ class EDAResult:
             'Energies in hartree', header, '-' * len(header)]
         if self.pop is not None:
             line = f"{'Population':<10}" + ''.join(
-                f"{self.pop[ia]:>{width}.5f}" for ia in atoms)
-            line += f"{self.pop.sum():>{width}.5f}"
+                f"{self.pop[ia]:>{width}.10f}" for ia in atoms)
+            line += f"{self.pop.sum():>{width}.10f}"
             lines += [line, '-' * len(header)]
         for key, values in rows.items():
             line = f"{self.labels[key]:<10}" + ''.join(
-                f"{values[ia]:>{width}.8f}" for ia in atoms)
-            line += f"{values.sum():>{width}.8f}"
+                f"{values[ia]:>{width}.10f}" for ia in atoms)
+            line += f"{values.sum():>{width}.10f}"
             lines.append(line)
         lines.append('-' * len(header))
         if self.e_tot_scf is not None:
@@ -674,7 +674,7 @@ class EDA(lib.StreamObject):
             e_x = hyb * g['exch']
             e_other = numpy.zeros(mol.natm)
             e_xc = xc_energy_by_atom(mf, mf.xc, dm, grids=grids) if dft else None
-            log.info('Grid-EDA: T = %.8f, V_ne = %.8f, J = %.8f, K = %.8f (sums)',
+            log.info('Grid-EDA: T = %.10f, V_ne = %.10f, J = %.10f, K = %.10f (sums)',
                      e_kin.sum(), e_ne.sum(), e_coul.sum(), e_x.sum())
             ne_label = 'grid-half'
         else:

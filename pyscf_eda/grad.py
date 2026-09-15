@@ -84,7 +84,7 @@ def hf_cbs_gradient(method, energies, grads, alpha=None):
 
 
 def format_gradient(mol, grad, title='Gradient (hartree/bohr)'):
-    lines = [title, f"{'atom':<8}{'x':>16}{'y':>16}{'z':>16}"]
+    lines = [title, f"{'atom':<8}{'x':>18}{'y':>18}{'z':>18}"]
     for ia in range(mol.natm):
-        lines.append(f"{mol.atom_symbol(ia) + str(ia):<8}" + ''.join(f"{v:>16.8f}" for v in grad[ia]))
+        lines.append(f"{mol.atom_symbol(ia) + str(ia):<8}" + ''.join(f"{v:>18.10f}" for v in grad[ia]))
     return '\n'.join(lines)

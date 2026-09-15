@@ -217,8 +217,8 @@ def hf_cbs_table(hf_atoms, hf_mol, alpha=HALKIER_ALPHA):
 def _hf_cbs_lines(hf_atoms, hf_mol, table, atoms, width, hf_cbs):
     """Formatted block with the HF/CBS estimates of all schemes."""
     def row(label, values, total=None):
-        line = f"{label:<20}" + ''.join(f"{values[ia]:>{width}.8f}" for ia in atoms)
-        return line + (f"{values.sum():>{width}.8f}" if total is None else f"{total:>{width}.8f}")
+        line = f"{label:<20}" + ''.join(f"{values[ia]:>{width}.10f}" for ia in atoms)
+        return line + (f"{values.sum():>{width}.10f}" if total is None else f"{total:>{width}.10f}")
     lines = ['HF energies and CBS estimates (atomic values; last column: molecular value)']
     for x in sorted(hf_atoms, key=CARDINAL.get):
         lines.append(row(f'E_HF[{x}Z]', hf_atoms[x], hf_mol[x]))
@@ -305,7 +305,7 @@ class CBSEDAResult:
         if atoms is None:
             atoms = range(mol.natm)
         atoms = list(atoms)
-        width = 16
+        width = 18
         header = f"{'Component':<20}" + ''.join(
             f"{f'{mol.atom_symbol(ia)}{ia}':>{width}}" for ia in atoms) + f"{'Sum':>{width}}"
         lines = [f"CBS energy density analysis: scheme {self.scheme} ({self.basis_family}XZ, "
@@ -314,8 +314,8 @@ class CBSEDAResult:
                  'Energies in hartree', header, '-' * len(header)]
 
         def row(label, values):
-            return f"{label:<20}" + ''.join(f"{values[ia]:>{width}.8f}" for ia in atoms) \
-                + f"{values.sum():>{width}.8f}"
+            return f"{label:<20}" + ''.join(f"{values[ia]:>{width}.10f}" for ia in atoms) \
+                + f"{values.sum():>{width}.10f}"
 
         for x in sorted(self.hf, key=CARDINAL.get):
             lines.append(row(f'E_HF[{x}Z]', self.hf[x]))
@@ -578,7 +578,7 @@ class HFCBSResult:
         if atoms is None:
             atoms = range(mol.natm)
         atoms = list(atoms)
-        width = 16
+        width = 18
         header = f"{'Component':<20}" + ''.join(
             f"{f'{mol.atom_symbol(ia)}{ia}':>{width}}" for ia in atoms) + f"{'Molecule':>{width}}"
         lines = [f"HF/CBS energy density analysis, orbital_basis='{self.orbital_basis}', "

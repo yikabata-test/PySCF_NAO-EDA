@@ -74,6 +74,12 @@ res_lso = eda_rhf.EDA(mf, orbital_basis='lso').kernel()   # LSO-EDA (eda_rhf.lso
 $\sum_A E_{TOT}^A$ は SCF の全エネルギーと (数値精度の範囲で) 厳密に一致します。
 `kernel()` の実行時にこの和則を検査し，ずれがあれば警告を出します。
 
+`summary()` (RHF/RKS, MP2, CCSD, CCSD(T), CBS の各結果) と勾配の表
+(`pyscf_eda.grad.format_gradient`) は，原子・分子・CBS 極限のいずれの
+エネルギーも勾配も小数点以下 10 桁で出力します (機械学習の教師データ用)。
+`examples/` のスクリプトも同じ精度で出力し，numpy 配列は
+`numpy.set_printoptions(precision=10, floatmode='fixed')` で表示しています。
+
 ## 分割の定義
 
 RHF の全エネルギー
