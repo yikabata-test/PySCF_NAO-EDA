@@ -57,6 +57,26 @@ p_A (PySCF stores the atom of every grid point in ``grids.atm_idx``, and
 the HF exchange, scaled with the functional's coefficients.  Non-local
 correlation (VV10) and dispersion corrections are not supported.
 
+Mulliken-EDA and Grid-EDA
+-------------------------
+Y. Kikuchi, Y. Imamura, H. Nakai, Int. J. Quantum Chem. 109, 2464 (2009)
+compare three schemes for DFT:
+
+* conventional EDA (N02): T, V_ne, J, K by basis functions, E_XC on the
+  grid with Becke's partition function (``xc_partition='grid'``, default);
+* Mulliken-EDA: E_XC partitioned by basis functions as well, through the
+  Mulliken partition of the density at every grid point, Eqs. (30), (31),
+
+      E_XC^A = sum_g w_g p(r_g) eps_XC(r_g) rho_A(r_g),
+      rho_A(r_g) = sum_{mu in A} sum_nu P_{mu nu} chi_mu(r_g) chi_nu(r_g)
+
+  (``xc_partition='mulliken'``; in an orthogonal one-centre basis rho_A is
+  formed with phi = chi X and P' = X^-1 P X^-T, giving an NAO version);
+* Grid-EDA (fuzzy atoms): every term partitioned with Becke's function,
+  Eqs. (22)-(26), the Coulomb and exchange terms by the pseudospectral
+  method (numerical over r1, analytic over r2) and V_ne half by the grid
+  points and half by the nuclei (``all_grid=True``).
+
 Orbital basis (conventional, LSO- and NAO-EDA)
 ----------------------------------------------
 T. Baba, M. Takeuchi, H. Nakai, Chem. Phys. Lett. 424, 193 (2006).
@@ -195,8 +215,14 @@ def is_dft(mf):
     return isinstance(mf, dft.rks.KohnShamDFT)
 
 
-def xc_energy_by_atom(mf, xc_code=None, dm=None, grids=None):
-    """Grid partition of a functional energy: E_XC^A = sum_{g in A} w_g F_XC(r_g).
+def xc_energy_by_atom(mf, xc_code=None, dm=None, grids=None, partition='grid', x=None):
+    """Atomic partition of a functional energy E_XC = sum_g w_g eps_XC(r_g) rho(r_g).
+
+    partition='grid'     : E_XC^A = sum_{g in A} w_g F_XC(r_g)  (Becke partition function)
+    partition='mulliken' : E_XC^A = sum_g w_g eps_XC(r_g) rho_A(r_g) with the
+                           Mulliken partition of the density at every grid point
+                           (Kikuchi et al. 2009, Eqs. 30-31); ``x`` selects an
+                           orthogonal one-centre basis (NAO, ...) for rho_A.
 
     Parameters
     ----------
@@ -212,11 +238,16 @@ def xc_energy_by_atom(mf, xc_code=None, dm=None, grids=None):
         Spin-summed density matrix (default ``mf.make_rdm1()``).
     grids : pyscf.dft.gen_grid.Grids, optional
         Grids with ``atm_idx`` (default ``mf.grids``).
+    partition : {'grid', 'mulliken'}
+    x : ndarray, optional
+        AO -> orthogonal basis transformation for partition='mulliken'.
 
     Returns
     -------
     ndarray (natm,)
     """
+    if partition not in ('grid', 'mulliken'):
+        raise ValueError("partition must be 'grid' or 'mulliken'")
     mol = mf.mol
     ni = mf._numint
     if xc_code is None:
@@ -239,17 +270,89 @@ def xc_energy_by_atom(mf, xc_code=None, dm=None, grids=None):
     ao_deriv = 0 if xctype == 'LDA' else 1
     make_rho, nset, nao = ni._gen_rho_evaluator(mol, dm, hermi=1, with_lapl=False)
     exc_atoms = numpy.zeros(mol.natm)
+    aoslices = mol.aoslice_by_atom()
+    if partition == 'mulliken':
+        if x is None:
+            x = numpy.eye(nao)
+        xinv = numpy.linalg.inv(x)
+        dm_orth = xinv.dot(dm).dot(xinv.T)          # P' = X^-1 P X^-T
     p1 = 0
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv):
         p0, p1 = p1, p1 + weight.size
         rho = make_rho(0, ao, mask, xctype)
         exc = ni.eval_xc_eff(xc_code, rho, deriv=0, xctype=xctype, spin=0)[0]
-        den = (rho if xctype == 'LDA' else rho[0]) * weight
-        contrib = den * exc
-        idx = grids.atm_idx[p0:p1]
-        keep = idx >= 0                      # padding points carry atm_idx = -1
-        exc_atoms += numpy.bincount(idx[keep], weights=contrib[keep], minlength=mol.natm)
+        if partition == 'grid':
+            den = (rho if xctype == 'LDA' else rho[0]) * weight
+            contrib = den * exc
+            idx = grids.atm_idx[p0:p1]
+            keep = idx >= 0                      # padding points carry atm_idx = -1
+            exc_atoms += numpy.bincount(idx[keep], weights=contrib[keep], minlength=mol.natm)
+        else:
+            ao0 = ao if ao.ndim == 2 else ao[0]
+            phi = ao0.dot(x)                     # orbitals phi_l(r_g)
+            # rho_l(g) = phi_l(g) (phi P')_l(g);  sum_l rho_l = rho
+            e_orb = numpy.einsum('g,gl,gl->l', weight * exc, phi, phi.dot(dm_orth))
+            exc_atoms += numpy.array([e_orb[q0:q1].sum() for _, _, q0, q1 in aoslices])
     return exc_atoms
+
+
+def grid_partition(mf, dm=None, grids=None, blksize=4000):
+    """Fuzzy-atom (Grid-EDA) partition of T, V_ne, J and K (Kikuchi et al. 2009, Eqs. 23-27).
+
+    All terms are integrated on the quadrature grid with Becke's partition
+    function; the Coulomb and exchange energies are evaluated by the
+    pseudospectral method with PySCF's ``int1e_grids`` integrals, and the
+    nucleus-electron attraction half by the grid points of A and half by the
+    nucleus of A (Eq. 24).
+
+    Returns
+    -------
+    dict with per-atom arrays 'kin', 'ne', 'coul', 'exch' (HF exchange
+    -1/4 Tr(PK), unscaled) and 'pop' (Becke populations, Eq. 27).
+    """
+    from pyscf.dft import numint
+    mol = mf.mol
+    if dm is None:
+        dm = mf.make_rdm1()
+    dm = numpy.asarray(dm)
+    if grids is None:
+        grids = mf.grids
+    if grids.coords is None:
+        grids.build(with_non0tab=True)
+    natm = mol.natm
+    charges = mol.atom_charges().astype(float)
+    coords_nuc = mol.atom_coords()
+    out = {k: numpy.zeros(natm) for k in ('kin', 'ne_grid', 'ne_nuc', 'coul', 'exch', 'pop')}
+    ngrid = grids.weights.size
+    for p0 in range(0, ngrid, blksize):
+        p1 = min(p0 + blksize, ngrid)
+        idx = grids.atm_idx[p0:p1]
+        keep = idx >= 0
+        if not keep.any():
+            continue
+        coords = grids.coords[p0:p1][keep]
+        weight = grids.weights[p0:p1][keep]
+        idx = idx[keep]
+        ao = numint.eval_ao(mol, coords, deriv=2)
+        ao0 = ao[0]
+        lap = ao[4] + ao[7] + ao[9]
+        d = ao0.dot(dm)                                   # D_nu(g) = sum_mu chi_mu P_mu nu
+        rho = numpy.einsum('gn,gn->g', ao0, d)
+        kin = -0.5 * numpy.einsum('gn,gn->g', d, lap)
+        v = mol.intor('int1e_grids', grids=coords)        # (g, mu, nu): <mu| 1/|r-g| |nu>
+        v_h = numpy.einsum('gmn,mn->g', v, dm)
+        coul = 0.5 * rho * v_h
+        exch = -0.25 * numpy.einsum('gn,gs,gsn->g', d, d, v)
+        # nuclear potentials at the grid points
+        r = numpy.linalg.norm(coords[:, None, :] - coords_nuc[None, :, :], axis=2)
+        v_nuc = -charges[None, :] / r                     # (g, A)
+        for key, val in (('kin', kin), ('coul', coul), ('exch', exch), ('pop', rho)):
+            out[key] += numpy.bincount(idx, weights=weight * val, minlength=natm)
+        # V_ne: half by the grid points (all nuclei), half by the nucleus (all grid points)
+        out['ne_grid'] += numpy.bincount(idx, weights=weight * rho * v_nuc.sum(axis=1), minlength=natm)
+        out['ne_nuc'] += numpy.einsum('g,g,ga->a', weight, rho, v_nuc)
+    out['ne'] = 0.5 * out.pop('ne_grid') + 0.5 * out.pop('ne_nuc')
+    return out
 
 
 class EDAResult:
@@ -290,6 +393,8 @@ class EDAResult:
         self.mol = mol
         self.ne_partition = ne_partition
         self.orbital_basis = orbital_basis
+        self.xc_partition = kwargs.get('xc_partition', 'grid')
+        self.scheme = kwargs.get('scheme', 'mulliken')      # 'mulliken' or 'grid' (fuzzy atoms)
         self.orth_coeff = kwargs.get('orth_coeff')
         self.pop = kwargs.get('pop')
         self.e_nn = kwargs['e_nn']
@@ -338,8 +443,15 @@ class EDAResult:
             f"{f'{mol.atom_symbol(ia)}{ia}':>{width}}" for ia in atoms)
         header += f"{'Sum':>{width}}"
         method = f'RKS {self.xc}' if self.xc is not None else 'RHF'
+        if self.scheme == 'grid':
+            scheme = 'Grid-EDA (all terms by Becke partition)'
+        elif self.xc is not None:
+            scheme = ("Mulliken-EDA (E_XC by basis functions)" if self.xc_partition == 'mulliken'
+                      else "conventional EDA (E_XC by grid)") + f", orbital_basis='{self.orbital_basis}'"
+        else:
+            scheme = f"orbital_basis='{self.orbital_basis}'"
         lines = [
-            f"Energy density analysis ({method}), orbital_basis='{self.orbital_basis}', "
+            f"Energy density analysis ({method}), {scheme}, "
             f"ne_partition='{self.ne_partition}'",
             'Energies in hartree', header, '-' * len(header)]
         if self.pop is not None:
@@ -384,6 +496,15 @@ class EDA(lib.StreamObject):
         'meta_lowdin'  : PySCF's meta-Loewdin orbitals.
         An explicit (nao, nao) transformation matrix X (phi = chi X) may
         also be given.
+    xc_partition : {'grid', 'mulliken'}
+        DFT only.  'grid': E_XC by Becke's partition function (conventional
+        EDA, default); 'mulliken': E_XC by the basis-function (Mulliken-type)
+        partition of the density at the grid points, in the same orbital
+        basis as the other terms (Mulliken-EDA, Kikuchi et al. 2009).
+    all_grid : bool
+        Grid-EDA: partition every term (T, V_ne, J, K, E_XC) with Becke's
+        partition function (fuzzy atoms; ``orbital_basis`` and
+        ``ne_partition`` are then ignored, V_ne follows Eq. 24).
 
     Examples
     --------
@@ -396,7 +517,8 @@ class EDA(lib.StreamObject):
     >>> print(res.summary())
     """
 
-    def __init__(self, mf, ne_partition='half', orbital_basis='nao'):
+    def __init__(self, mf, ne_partition='half', orbital_basis='nao', xc_partition='grid',
+                 all_grid=False):
         self._check_mf(mf)
         self._scf = mf
         self.mol = mf.mol
@@ -404,6 +526,8 @@ class EDA(lib.StreamObject):
         self.stdout = mf.stdout
         self.ne_partition = ne_partition
         self.orbital_basis = orbital_basis
+        self.xc_partition = xc_partition      # 'grid' (conventional) or 'mulliken' (Mulliken-EDA)
+        self.all_grid = all_grid              # True: Grid-EDA (fuzzy atoms for every term)
         self.orth_coeff = None   # transformation matrix X (built in kernel)
         self.dm = None       # AO density matrix used (default: mf.make_rdm1())
         self.result = None
@@ -478,47 +602,74 @@ class EDA(lib.StreamObject):
 
         # --- energy densities -------------------------------------------
         e_nn = nuc_repulsion_by_atom(mol)
-        e_kin = partition(dm, t_mat)
-
-        e_ne_ao = partition(dm, v_ne)                                   # by basis functions
-        e_ne_nuc = numpy.einsum('ij,aji->a', dm, v_ne_atoms)            # by nuclei
-        if self.ne_partition == 'half':
-            e_ne = 0.5 * e_ne_ao + 0.5 * e_ne_nuc
-        elif self.ne_partition == 'mulliken':
-            e_ne = e_ne_ao
-        else:
-            e_ne = e_ne_nuc
-
-        e_other = partition(dm, h_other) if has_other else numpy.zeros(mol.natm)
-
-        e_xc = None
-        xc = None
-        if is_dft(mf):
-            xc = mf.xc
+        if self.xc_partition not in ('grid', 'mulliken'):
+            raise ValueError("xc_partition must be 'grid' or 'mulliken'")
+        dft = is_dft(mf)
+        xc = mf.xc if dft else None
+        if dft:
             ni = mf._numint
             omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
-            vj = mf.get_j(mol, dm)
-            e_coul = 0.5 * partition(dm, vj)
-            if abs(hyb) > 1e-10 or abs(alpha) > 1e-10:
-                vk = mf.get_k(mol, dm) * hyb
-                if abs(omega) > 1e-10:
-                    vk += mf.get_k(mol, dm, omega=omega) * (alpha - hyb)
-                e_x = -0.25 * partition(dm, vk)
-            else:
-                e_x = numpy.zeros(mol.natm)
-            e_xc = xc_energy_by_atom(mf, mf.xc, dm)
-            log.info('E_XC = %.10f (grid partition, %d points)', e_xc.sum(), mf.grids.weights.size)
         else:
-            vj, vk = mf.get_jk(mol, dm)
-            e_coul = 0.5 * partition(dm, vj)
-            e_x = -0.25 * partition(dm, vk)
+            omega, alpha, hyb = 0.0, 1.0, 1.0
 
-        pop = partition(dm, s_mat)   # Mulliken / Loewdin / natural populations
+        if self.all_grid:
+            # ---- Grid-EDA: every term by Becke's partition function ----
+            if has_other:
+                raise NotImplementedError('Grid-EDA does not support extra one-electron terms')
+            if abs(omega) > 1e-10:
+                raise NotImplementedError('Grid-EDA does not support range-separated hybrids')
+            grids = getattr(mf, 'grids', None)
+            if grids is None:
+                grids = becke_grids(mol)
+            if grids.coords is None:
+                grids.build(with_non0tab=True)
+            g = grid_partition(mf, dm, grids)
+            e_kin, e_ne, e_coul, pop = g['kin'], g['ne'], g['coul'], g['pop']
+            e_x = hyb * g['exch']
+            e_other = numpy.zeros(mol.natm)
+            e_xc = xc_energy_by_atom(mf, mf.xc, dm, grids=grids) if dft else None
+            log.info('Grid-EDA: T = %.8f, V_ne = %.8f, J = %.8f, K = %.8f (sums)',
+                     e_kin.sum(), e_ne.sum(), e_coul.sum(), e_x.sum())
+            ne_label = 'grid-half'
+        else:
+            e_kin = partition(dm, t_mat)
+            e_ne_ao = partition(dm, v_ne)                                   # by basis functions
+            e_ne_nuc = numpy.einsum('ij,aji->a', dm, v_ne_atoms)            # by nuclei
+            if self.ne_partition == 'half':
+                e_ne = 0.5 * e_ne_ao + 0.5 * e_ne_nuc
+            elif self.ne_partition == 'mulliken':
+                e_ne = e_ne_ao
+            else:
+                e_ne = e_ne_nuc
+            e_other = partition(dm, h_other) if has_other else numpy.zeros(mol.natm)
+            e_xc = None
+            if dft:
+                vj = mf.get_j(mol, dm)
+                e_coul = 0.5 * partition(dm, vj)
+                if abs(hyb) > 1e-10 or abs(alpha) > 1e-10:
+                    vk = mf.get_k(mol, dm) * hyb
+                    if abs(omega) > 1e-10:
+                        vk += mf.get_k(mol, dm, omega=omega) * (alpha - hyb)
+                    e_x = -0.25 * partition(dm, vk)
+                else:
+                    e_x = numpy.zeros(mol.natm)
+                e_xc = xc_energy_by_atom(mf, mf.xc, dm, partition=self.xc_partition,
+                                         x=x if basis_name != 'ao' else None)
+                log.info('E_XC = %.10f (%s partition, %d points)', e_xc.sum(),
+                         self.xc_partition, mf.grids.weights.size)
+            else:
+                vj, vk = mf.get_jk(mol, dm)
+                e_coul = 0.5 * partition(dm, vj)
+                e_x = -0.25 * partition(dm, vk)
+            pop = partition(dm, s_mat)   # Mulliken / Loewdin / natural populations
+            ne_label = self.ne_partition
 
-        self.result = EDAResult(mol, self.ne_partition, basis_name,
+        self.result = EDAResult(mol, ne_label, basis_name if not self.all_grid else 'grid',
                                 e_nn=e_nn, e_kin=e_kin, e_ne=e_ne, e_other=e_other,
                                 e_coul=e_coul, e_x=e_x, e_xc=e_xc, xc=xc, pop=pop,
-                                orth_coeff=x, e_tot_scf=mf.e_tot if mf.converged else None)
+                                orth_coeff=x, e_tot_scf=mf.e_tot if mf.converged else None,
+                                xc_partition=self.xc_partition,
+                                scheme='grid' if self.all_grid else 'mulliken')
 
         # --- sum-rule check ---------------------------------------------
         e_sum = self.result.e_tot.sum()
@@ -538,9 +689,21 @@ class EDA(lib.StreamObject):
     run = kernel
 
 
-def kernel(mf, ne_partition='half', orbital_basis='nao', dm=None):
-    """Perform the EDA for a converged RHF object and return an ``EDAResult``."""
-    return EDA(mf, ne_partition=ne_partition, orbital_basis=orbital_basis).kernel(dm=dm)
+def kernel(mf, ne_partition='half', orbital_basis='nao', dm=None, xc_partition='grid',
+           all_grid=False):
+    """Perform the EDA for a converged RHF/RKS object and return an ``EDAResult``."""
+    return EDA(mf, ne_partition=ne_partition, orbital_basis=orbital_basis,
+               xc_partition=xc_partition, all_grid=all_grid).kernel(dm=dm)
+
+
+def mulliken_eda(mf, ne_partition='half', orbital_basis='ao', dm=None):
+    """Mulliken-EDA (Kikuchi et al. 2009): every term, E_XC included, by basis functions."""
+    return kernel(mf, ne_partition, orbital_basis, dm=dm, xc_partition='mulliken')
+
+
+def grid_eda(mf, dm=None):
+    """Grid-EDA (fuzzy atoms): every term partitioned with Becke's partition function."""
+    return kernel(mf, dm=dm, all_grid=True)
 
 
 def atom_energies(mf, ne_partition='half', orbital_basis='nao', dm=None):

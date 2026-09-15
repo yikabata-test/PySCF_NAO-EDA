@@ -121,6 +121,23 @@ slater = eda_rhf.xc_energy_by_atom(mf, 'LDA_X')
 原著の EDA コードは Becke 原法＋Bragg 半径のサイズ補正です。全エネルギーは変わりませんが原子ごとの
 $E_{XC}$ が最大 0.1 hartree 程度変わるので，論文と比較する場合は `becke_grids` を使ってください。
 
+### Mulliken-EDA と Grid-EDA (Kikuchi–Imamura–Nakai 2009)
+
+Kikuchi, Imamura, Nakai, *Int. J. Quantum Chem.* **109**, 2464 (2009) は DFT の分割法として
+3 種を比較しています。`EDA` の引数で選べます。
+
+| 手法 | T, V_ne, J, K | E_XC | 指定 |
+|---|---|---|---|
+| 従来型 EDA (N02) | 基底関数 (Mulliken 型) | グリッド (Becke 分割関数) | `xc_partition='grid'` (既定) |
+| Mulliken-EDA | 基底関数 | 基底関数: 各グリッド点の密度を Mulliken 型に分割 $\rho_A(r_g)=\sum_{\mu\in A}\sum_\nu P_{\mu\nu}\chi_\mu\chi_\nu$ (式 (30), (31)) | `xc_partition='mulliken'` / `mulliken_eda(mf)` |
+| Grid-EDA (fuzzy atom) | すべて Becke 分割関数 (式 (23)–(26); J, K は擬スペクトル法) | グリッド | `all_grid=True` / `grid_eda(mf)` |
+
+Mulliken-EDA の $E_{XC}$ は `orbital_basis` で選んだ軌道基底 (NAO など) で分割されるので，
+論文の結論で提案されている「全項目を NAO 基底で分割する」形も `orbital_basis='nao'` で得られます。
+Grid-EDA の J, K は各グリッド点の静電ポテンシャル積分 (`int1e_grids`) を用い，級数打ち切りは
+グリッド精度 (level 5 で全エネルギーの和則が 1e-6 程度) に依存します。核–電子引力は式 (24) のとおり
+半分をグリッド点，半分を原子核で分割します。
+
 ### 原著論文との一致 (DFT)
 
 * **H2O, B3LYP/cc-pVDZ (Nakai 2002, Table 1):** デカルト型 d 関数，VWN-RPA 版 B3LYP
@@ -129,6 +146,10 @@ $E_{XC}$ が最大 0.1 hartree 程度変わるので，論文と比較する場�
   全桁 (1e-4 hartree 以内) で一致します (`examples/h2o_b3lyp_table1.py`, `tests/test_rks_eda.py`)。
   核–電子引力を全て基底関数で分割する `'mulliken'` では E_Ne が 0.07 hartree ずれるので，
   原著コードの分割は `'half'` です。
+* **G2-1 分子, B3LYP(VWN5)/6-31G(d,p) (Kikuchi–Imamura–Nakai 2009, Table II–III):**
+  閉殻分子 (C2H2, C2H4, C2H6, SiH2(1A1), SiH4, HF) について Mulliken-EDA / Grid-EDA / 従来型 EDA
+  の原子電子数と原子エネルギーを `examples/g2_mulliken_grid_eda.py` で比較しています
+  (構造は G2-1 の MP2(full)/6-31G(d) 構造を文献値から入力しているため ~1 mhartree の差が残ります)。
 * **CO2, B3LYP (Baba–Takeuchi–Nakai 2006, Table 1–2):** GAMESS 既定の VWN5 版 B3LYP
   (`'B3LYP5'`) とデカルト型関数で全エネルギー (−188.51822 vs −188.51825) と Mulliken 電子数 (5.670)
   が一致します。NAO-EDA は NAO の構成法に敏感で，`pyscf.lo.nao` の簡略版では C 原子エネルギーが
@@ -355,6 +376,7 @@ print(hfres.estimates['feller']['atoms'], hfres.estimates['feller_alpha'])
 * `examples/co2_nao_eda.py` – CO2 (RHF) での従来型 / LSO- / NAO-EDA の基底関数依存性
 * `examples/h2o_b3lyp_table1.py` – H2O, B3LYP/cc-pVDZ の EDA (2002 年論文 Table 1 の再現)
 * `examples/co2_b3lyp_2006.py` – CO2, B3LYP の各基底での MPA/LPA/NPA と EDA/LSO/NAO-EDA (2006 年論文 Table 1, 2 との比較)
+* `examples/g2_mulliken_grid_eda.py` – G2-1 分子の Mulliken-EDA / Grid-EDA / 従来型 EDA (2009 年論文 Table II, III との比較)
 * `examples/h2o_mp2_eda.py` – H2O の MP2-EDA (占有側 / 仮想側分割の比較，NAO 基底，UMP2 孤立原子との差)
 * `examples/h2o_ccsd_eda.py` – H2O の CCSD-EDA (MP2-EDA との比較，NAO 基底，UCCSD 孤立原子との差)
 * `examples/h2o_ccsd_t_eda.py` – H2O の CCSD(T)-EDA ($U^{0,0}$ / $U^{2,2}$，$E_T^{[4]}$ / $E_{ST}^{[5]}$，UCCSD(T) 孤立原子との差)

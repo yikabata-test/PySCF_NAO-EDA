@@ -23,4 +23,4 @@ from pyscf_eda import mp2  # noqa: F401
 from pyscf_eda import ccsd  # noqa: F401
 from pyscf_eda import ccsd_t  # noqa: F401
 from pyscf_eda import cbs  # noqa: F401
-from pyscf_eda.rhf import EDA, EDAResult, kernel, atom_energies, nao_eda, lso_eda, becke_grids, xc_energy_by_atom  # noqa: F401
+from pyscf_eda.rhf import EDA, EDAResult, kernel, atom_energies, nao_eda, lso_eda, becke_grids, xc_energy_by_atom, mulliken_eda, grid_eda  # noqa: F401
