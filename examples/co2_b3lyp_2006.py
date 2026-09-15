@@ -6,7 +6,8 @@ a series of basis sets.
 
 Conditions matching the GAMESS calculations of the paper: Cartesian
 functions, B3LYP with VWN5 ('B3LYP5' in PySCF), Becke partition with
-Bragg radii, half/half nucleus-electron partition.
+Bragg radii and the four smoothing iterations of GAMESS (code='gamess'),
+half/half nucleus-electron partition.
 """
 
 from pyscf import gto, dft
@@ -46,7 +47,7 @@ for basis, ref in PAPER.items():
         print(f"{basis:<13} skipped ({exc})")
         continue
     mf = dft.RKS(mol, xc='B3LYP5')
-    mf.grids = eda_rhf.becke_grids(mf, level=5)
+    mf.grids = eda_rhf.becke_grids(mf, level=5, code='gamess')
     mf.run(conv_tol=1e-10)
     out = {}
     for ob in ('ao', 'lso', 'nao'):

@@ -5,8 +5,9 @@ EDA of H2O at B3LYP/cc-pVDZ.
 Conditions matching the HONDO99 calculation of the paper:
   * Cartesian d functions (6d), cc-pVDZ
   * B3LYP with the VWN-RPA correlation (PySCF's 'B3LYP')
-  * exchange-correlation partition: Becke's original scheme with the
-    Bragg-radius size adjustment (pyscf_eda.rhf.becke_grids)
+  * exchange-correlation partition: Becke's original scheme (three
+    smoothing iterations, as in HONDO99) with the Bragg-radius size
+    adjustment (pyscf_eda.rhf.becke_grids(code='hondo'))
   * nucleus-electron attraction: half by basis functions, half by nuclei
 """
 
@@ -21,7 +22,7 @@ mol = gto.M(
     ''',
     basis='cc-pvdz', cart=True, verbose=0)
 mf = dft.RKS(mol, xc='B3LYP')
-mf.grids = eda_rhf.becke_grids(mf, level=5)
+mf.grids = eda_rhf.becke_grids(mf, level=5, code='hondo')
 mf.run(conv_tol=1e-10)
 dm = mf.make_rdm1()
 

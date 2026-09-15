@@ -118,8 +118,15 @@ slater = eda_rhf.xc_energy_by_atom(mf, 'LDA_X')
 ```
 
 **グリッド分割関数について:** PySCF 既定のグリッドは Treutler–Ahlrichs のサイズ補正を用いますが，
-原著の EDA コードは Becke 原法＋Bragg 半径のサイズ補正です。全エネルギーは変わりませんが原子ごとの
-$E_{XC}$ が最大 0.1 hartree 程度変わるので，論文と比較する場合は `becke_grids` を使ってください。
+原著の EDA コードは Becke 原法＋Bragg 半径 (H = 0.35 Å) のサイズ補正です。全エネルギーは変わりませんが
+原子ごとの $E_{XC}$ が最大 0.1 hartree 程度変わるので，論文と比較する場合は `becke_grids` を使ってください。
+さらに GAMESS のソース (`dftgrd.src`, `mod_dft_partfunc.src`) を確認したところ，GAMESS の Becke 分割は
+平滑化多項式 $f(x)=\tfrac32 x-\tfrac12 x^3$ を **4 回**反復しており (`BECKE4`)，Becke 原法・HONDO99 の
+3 回と異なります。この違いは原子ごとの $E_{XC}$ に最大 0.05 hartree 程度影響します。
+`becke_grids(mf, code='hondo')` (3 回, 2002 年論文) と `becke_grids(mf, code='gamess')` (4 回, 2006・2009 年論文)
+で切り替えられます (`iterations` で任意回数)。GAMESS 本体の Bragg–Slater 半径表 (H を Bohr 半径 0.529 Å
+に変更したもの, `radii='gamess'`) も選べますが，これを使うと文献値から大きく外れるため，中井研の EDA
+コードは Becke 原法の半径表 (H = 0.35 Å) を用いていたと判断できます。
 
 ### Mulliken-EDA と Grid-EDA (Kikuchi–Imamura–Nakai 2009)
 
@@ -148,14 +155,18 @@ Grid-EDA の J, K は各グリッド点の静電ポテンシャル積分 (`int1e
   原著コードの分割は `'half'` です。
 * **G2-1 分子, B3LYP(VWN5)/6-31G(d,p) (Kikuchi–Imamura–Nakai 2009, Table II–III):**
   閉殻分子 (C2H2, C2H4, C2H6, SiH2(1A1), SiH4, HF) について Mulliken-EDA / Grid-EDA / 従来型 EDA
-  の原子電子数と原子エネルギーを `examples/g2_mulliken_grid_eda.py` で比較しています
-  (構造は G2-1 の MP2(full)/6-31G(d) 構造を文献値から入力しているため ~1 mhartree の差が残ります)。
+  の原子電子数と原子エネルギーを `examples/g2_mulliken_grid_eda.py` で比較しています。
+  GAMESS と同じ 4 回反復の Becke 分割 (`code='gamess'`) を使うと，C2H2, C2H4, C2H6, HF の
+  Mulliken-EDA・Grid-EDA・従来型 EDA が論文の全桁 (1–3 mhartree 以内) で一致します
+  (SiH2, SiH4 は論文に構造が記載されておらず ~5 mhartree の差が残ります)。
 * **CO2, B3LYP (Baba–Takeuchi–Nakai 2006, Table 1–2):** GAMESS 既定の VWN5 版 B3LYP
   (`'B3LYP5'`) とデカルト型関数で全エネルギー (−188.51822 vs −188.51825) と Mulliken 電子数 (5.670)
-  が一致します。NAO-EDA は NAO の構成法に敏感で，`pyscf.lo.nao` の簡略版では C 原子エネルギーが
-  論文より 0.39 hartree 低くなりますが，Reed–Weinstock–Weinhold の手順 (NMB を一括 OWSO，NRB を
-  Schmidt 直交化後 OWSO; 本パッケージの `'nao'`) では −39.4397 vs 論文 −39.44289 (比率 20.92 % で一致)，
-  NPA 4.961 vs 4.981 となります。基底系列全体の比較は `examples/co2_b3lyp_2006.py` を参照してください。
+  が一致します。4 回反復の Becke 分割 (`code='gamess'`) で従来型 EDA の C 原子エネルギーは
+  −37.985 vs 論文 −37.98529 と一致します (3 回反復では −0.05 hartree の一律のずれが全基底で残ります)。
+  NAO-EDA は NAO の構成法に敏感で，`pyscf.lo.nao` の簡略版では C 原子エネルギーが論文より 0.4 hartree
+  低くなりますが，Reed–Weinstock–Weinhold の手順 (NMB を一括 OWSO，NRB を Schmidt 直交化後 OWSO;
+  本パッケージの `'nao'`) では論文と数十 mhartree 以内で一致します (NPA 4.96 vs 4.98)。
+  基底系列全体の比較は `examples/co2_b3lyp_2006.py` を参照してください。
 
 ## NAO-EDA / LSO-EDA (軌道基底の選択)
 

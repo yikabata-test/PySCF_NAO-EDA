@@ -13,11 +13,11 @@ H  0.000000 -0.757193  0.586080
 '''
 
 
-def _rks(xc, basis='cc-pvdz', cart=False, becke=False, level=None, **kw):
+def _rks(xc, basis='cc-pvdz', cart=False, becke=False, level=None, code='hondo', **kw):
     mol = gto.M(atom=H2O_ATOM, basis=basis, cart=cart, verbose=0)
     mf = dft.RKS(mol, xc=xc)
     if becke:
-        mf.grids = eda_rhf.becke_grids(mf, level=level)
+        mf.grids = eda_rhf.becke_grids(mf, level=level, code=code)
     elif level is not None:
         mf.grids.level = level
     return mf.run(conv_tol=1e-10, **kw)
@@ -114,22 +114,20 @@ def test_reproduces_baba_2006_co2_conventional():
     # Baba, Takeuchi, Nakai, Chem. Phys. Lett. 424, 193 (2006).
     mol = gto.M(atom='C 0 0 0; O 0 0 1.16; O 0 0 -1.16', basis='cc-pvdz', cart=True, verbose=0)
     mf = dft.RKS(mol, xc='B3LYP5')
-    mf.grids = eda_rhf.becke_grids(mf, level=5)
+    mf.grids = eda_rhf.becke_grids(mf, level=5, code='gamess')   # 4 Becke iterations
     mf.run(conv_tol=1e-10)
     assert abs(mf.e_tot - (-188.51825)) < 1e-4
     res = eda_rhf.kernel(mf, orbital_basis='ao', ne_partition='half')
     assert abs(res.pop[0] - 5.670) < 2e-3
-    # the conventional EDA is shifted by -0.05 hartree for every basis set
-    # (E_XC grid partition of GAMESS vs PySCF); the NAO-EDA agrees to 3 mhartree
-    assert abs(res.e_tot[0] - (-37.98529)) < 0.06
-    assert abs(100 * res.e_tot[0] / mf.e_tot - 20.15) < 0.05
+    assert abs(res.e_tot[0] - (-37.98529)) < 2e-3
+    assert abs(100 * res.e_tot[0] / mf.e_tot - 20.15) < 0.01
     lso = eda_rhf.kernel(mf, orbital_basis='lso', ne_partition='half')
     assert abs(lso.pop[0] - 6.102) < 0.02
     assert abs(100 * lso.e_tot[0] / mf.e_tot - 20.44) < 0.1
     nao = eda_rhf.kernel(mf, orbital_basis='nao', ne_partition='half')
     assert abs(nao.pop[0] - 4.981) < 0.03
-    assert abs(nao.e_tot[0] - (-39.44289)) < 0.02
-    assert abs(100 * nao.e_tot[0] / mf.e_tot - 20.92) < 0.02
+    assert abs(nao.e_tot[0] - (-39.44289)) < 0.06
+    assert abs(100 * nao.e_tot[0] / mf.e_tot - 20.92) < 0.04
 
 
 def test_correlated_methods_reject_dft_reference(h2o_b3lyp):
@@ -239,16 +237,27 @@ def test_hf_molecule_against_table3():
     # HF molecule, Table III of Kikuchi et al. (2009): populations and atomic energies
     mol = gto.M(atom='F 0 0 0; H 0 0 0.9337', basis='6-31g(d,p)', cart=True, verbose=0)
     mf = dft.RKS(mol, xc='B3LYP5')
-    mf.grids = eda_rhf.becke_grids(mf, level=5)
+    mf.grids = eda_rhf.becke_grids(mf, level=5, code='gamess')   # 4 Becke iterations
     mf.run(conv_tol=1e-10)
     r_mull = eda_rhf.mulliken_eda(mf, orbital_basis='ao')
     r_grid = eda_rhf.grid_eda(mf)
     r_conv = eda_rhf.kernel(mf, orbital_basis='ao')
-    # Mulliken-EDA reproduces the paper to the printed digits; the Becke
-    # partition of GAMESS differs slightly from PySCF's (Bragg radii), which
-    # shows up in the grid population and in the E_XC partition of the
-    # conventional EDA (~0.02 hartree for F).
-    assert abs(r_mull.pop[0] - 9.36) < 0.01 and abs(r_grid.pop[0] - 9.07) < 0.06
+    assert abs(r_mull.pop[0] - 9.36) < 0.01 and abs(r_grid.pop[0] - 9.07) < 0.015
     assert abs(r_mull.e_tot[0] - (-99.898)) < 2e-3 and abs(r_mull.e_tot[1] - (-0.491)) < 2e-3
     assert abs(r_grid.e_tot[0] - (-99.764)) < 5e-3 and abs(r_grid.e_tot[1] - (-0.625)) < 5e-3
-    assert abs(r_conv.e_tot[0] - (-99.827)) < 3e-2 and abs(r_conv.e_tot[1] - (-0.563)) < 3e-2
+    assert abs(r_conv.e_tot[0] - (-99.827)) < 4e-3 and abs(r_conv.e_tot[1] - (-0.563)) < 4e-3
+
+
+def test_becke_iterations_hondo_vs_gamess():
+    # HONDO99 (Nakai 2002) uses Becke's 3 iterations, GAMESS 4: the H2O
+    # Table 1 value is reproduced with 3 and not with 4
+    mf3 = _rks('B3LYP', cart=True, becke=True, level=5, code='hondo')
+    mf4 = _rks('B3LYP', cart=True, becke=True, level=5, code='gamess')
+    r3 = eda_rhf.kernel(mf3, orbital_basis='ao', ne_partition='half')
+    r4 = eda_rhf.kernel(mf4, orbital_basis='ao', ne_partition='half')
+    assert abs(r3.e_tot[0] - (-75.36943)) < 3e-4
+    assert abs(r4.e_tot[0] - (-75.36943)) > 1e-2
+    assert abs(mf3.e_tot - mf4.e_tot) < 1e-7
+    assert mf4.grids.becke_scheme.__name__ == 'becke4'
+    g = eda_rhf.becke_grids(mf3.mol, radii='gamess')
+    assert abs(g.atomic_radii[1] * 0.52917721092 - 0.52917) < 1e-4

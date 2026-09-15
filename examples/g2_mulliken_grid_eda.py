@@ -4,7 +4,8 @@ Tables II and III of Y. Kikuchi, Y. Imamura, H. Nakai, Int. J. Quantum
 Chem. 109, 2464 (2009): C2H2, C2H4, C2H6, SiH2 (1A1), SiH4 and HF.
 
 Conditions of the paper: B3LYP with VWN5 ('B3LYP5'), 6-31G(d,p) with
-Cartesian d functions (GAMESS default), Becke partition with Bragg radii.
+Cartesian d functions (GAMESS default), Becke partition with Bragg radii
+and the four smoothing iterations of GAMESS (code='gamess').
 Geometries are the MP2(full)/6-31G(d) structures of the G2-1 set (values
 below are taken from the literature to ~1e-3 A; the paper does not list
 them, so differences of ~1 mhartree in the atomic energies are expected).
@@ -54,7 +55,7 @@ ATOM_SPIN = {'H': 1, 'C': 2, 'Si': 2, 'F': 1}
 def atom_energy(symb):
     mol = gto.M(atom=f'{symb} 0 0 0', basis=BASIS, cart=True, spin=ATOM_SPIN[symb], verbose=0)
     mf = dft.UKS(mol, xc='B3LYP5')
-    mf.grids = eda_rhf.becke_grids(mf, level=5)
+    mf.grids = eda_rhf.becke_grids(mf, level=5, code='gamess')
     return mf.run(conv_tol=1e-10).e_tot
 
 
@@ -66,7 +67,7 @@ print(f"{'':14}" + ''.join(f"{'this':>8}{'paper':>7}" for _ in range(2))
 for name, (atom, sites) in MOLECULES.items():
     mol = gto.M(atom=atom, basis=BASIS, cart=True, verbose=0)
     mf = dft.RKS(mol, xc='B3LYP5')
-    mf.grids = eda_rhf.becke_grids(mf, level=5)
+    mf.grids = eda_rhf.becke_grids(mf, level=5, code='gamess')
     mf.run(conv_tol=1e-10)
     r_mull = eda_rhf.mulliken_eda(mf, orbital_basis='ao')
     r_grid = eda_rhf.grid_eda(mf)

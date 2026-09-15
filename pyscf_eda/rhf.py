@@ -185,25 +185,71 @@ def nuc_repulsion_by_atom(mol):
     return e_nn
 
 
-def becke_grids(mf_or_mol, level=None):
-    """Grids with Becke's original partition and Bragg-radius size adjustment.
+# Bragg-Slater radii table of GAMESS (dftgrd.src, GMSBSLRD; angstrom): Slater's
+# values with hydrogen changed to the Bohr radius.  Not used by the EDA papers
+# (their partition reproduces with Becke's H = 0.35 A), provided for reference.
+GAMESS_BRAGG_RADII_ANGSTROM = {
+    1: 0.52917, 2: 0.31, 3: 1.45, 4: 1.05, 5: 0.85, 6: 0.70, 7: 0.65, 8: 0.60, 9: 0.50,
+    10: 0.38, 11: 1.80, 12: 1.50, 13: 1.25, 14: 1.10, 15: 1.00, 16: 1.00, 17: 1.00, 18: 0.71,
+}
 
-    This is the partition used by the EDA code of Nakai (HONDO99/GAMESS):
-    with it, Table 1 of Chem. Phys. Lett. 363, 73 (2002) is reproduced to
-    all printed digits (Cartesian cc-pVDZ, B3LYP with VWN-RPA).  PySCF's
-    default grids use the Treutler-Ahlrichs size adjustment instead, which
-    changes the atomic E_XC partition by up to ~0.1 hartree while leaving
-    the total energy unchanged.
 
-    Usage: ``mf.grids = becke_grids(mf)`` before running the SCF.
+def becke_iterations(k):
+    """Becke cell function with k iterations of the smoothing polynomial f(x) = 3/2 x - 1/2 x^3."""
+    def scheme(g):
+        for _ in range(k):
+            g = (3 - g**2) * g * .5
+        return g
+    scheme.__name__ = f'becke{k}'
+    return scheme
+
+
+def becke_grids(mf_or_mol, level=None, iterations=3, radii='bragg', code=None):
+    """Grids with Becke's partition function and Bragg-radius size adjustment.
+
+    Parameters
+    ----------
+    iterations : int
+        Number of iterations of the smoothing polynomial: 3 in Becke's
+        original scheme (J. Chem. Phys. 88, 2547 (1988)) and in HONDO99,
+        4 in GAMESS (module dftgrd.src / mod_dft_partfunc.src, 'BECKE4').
+    radii : {'bragg', 'gamess'} or ndarray
+        Atomic radii for the size adjustment (Bohr array indexed by Z):
+        'bragg' is Becke's table (Slater's radii with H = 0.35 A, PySCF's
+        BRAGG_RADII), 'gamess' the table of GAMESS (H = 0.529 A).
+    code : {'hondo', 'gamess'}, optional
+        Preset: 'hondo' = 3 iterations (reproduces Table 1 of Nakai 2002,
+        HONDO99), 'gamess' = 4 iterations (reproduces the GAMESS-based
+        papers of Baba et al. 2006 and Kikuchi et al. 2009).  Both use the
+        Bragg radii with H = 0.35 A.
+
+    The total energy does not depend on these choices; the atomic E_XC
+    partition changes by up to ~0.05 hartree between 3 and 4 iterations.
+    PySCF's default grids use the Treutler-Ahlrichs size adjustment, which
+    differs from all of the above.
+
+    Usage: ``mf.grids = becke_grids(mf, code='gamess')`` before the SCF.
     """
     from pyscf import dft
-    from pyscf.dft import gen_grid, radi
+    from pyscf.dft import radi
     mol = mf_or_mol.mol if hasattr(mf_or_mol, 'mol') else mf_or_mol
+    if code is not None:
+        iterations = {'hondo': 3, 'gamess': 4}[code.lower()]
     grids = dft.Grids(mol)
-    grids.becke_scheme = gen_grid.original_becke
+    grids.becke_scheme = becke_iterations(iterations)
     grids.radii_adjust = radi.becke_atomic_radii_adjust
-    grids.atomic_radii = radi.BRAGG_RADII
+    if isinstance(radii, str):
+        if radii == 'bragg':
+            grids.atomic_radii = radi.BRAGG_RADII
+        elif radii == 'gamess':
+            table = radi.BRAGG_RADII.copy()
+            for z, r in GAMESS_BRAGG_RADII_ANGSTROM.items():
+                table[z] = r / radi.BOHR if hasattr(radi, 'BOHR') else r / 0.52917721092
+            grids.atomic_radii = table
+        else:
+            raise ValueError("radii must be 'bragg', 'gamess' or an array")
+    else:
+        grids.atomic_radii = numpy.asarray(radii)
     if level is not None:
         grids.level = level
     return grids
