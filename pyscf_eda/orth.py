@@ -18,9 +18,19 @@ atom, the assignment of orbitals to atoms is the same as for the AOs
 Available bases
 ---------------
 'ao'          : the raw (non-orthogonal) AO basis, X = 1 -> conventional EDA
-'nao'         : natural atomic orbitals (Reed, Weinstock, Weinhold 1985),
-                obtained through the occupancy-weighted symmetric
-                orthogonalization (OWSO) implemented in ``pyscf.lo.nao``
+'nao'         : natural atomic orbitals following the procedure of Reed,
+                Weinstock and Weinhold, J. Chem. Phys. 83, 735 (1985):
+                pre-NAOs from the atomic blocks of the density (spherically
+                averaged per angular momentum), occupancy-weighted symmetric
+                orthogonalization (OWSO) of the natural minimal basis (NMB:
+                core + valence) of all atoms together, Schmidt
+                orthogonalization of the Rydberg set (NRB) to the NMB and
+                OWSO of the NRB.  Reproduces the NAO-EDA numbers of Baba et
+                al. (2006) for CO2 to a few mhartree.
+'nao_pyscf'   : the NAO variant of ``pyscf.lo.nao`` (Loewdin for the core
+                set, OWSO for the valence set with the core projected out,
+                Loewdin for the Rydberg set).  Kept for reference; it differs
+                from 'nao' by ~0.4 hartree in the C-atom energy of CO2.
 'lso'/'lowdin': Loewdin symmetrically orthogonalized AOs, X = S^{-1/2}
 'meta_lowdin' : Loewdin orthogonalization within the core, valence and
                 Rydberg spaces separately (PySCF default for population
@@ -32,7 +42,8 @@ from pyscf import lib
 from pyscf.lo import orth as pyscf_orth
 from pyscf.lo import nao as pyscf_nao
 
-ORBITAL_BASES = ('ao', 'nao', 'lso', 'lowdin', 'meta_lowdin')
+ORBITAL_BASES = ('ao', 'nao', 'nao_pyscf', 'lso', 'lowdin', 'meta_lowdin')
+OWSO_MIN_WEIGHT = 1e-4
 
 
 def orth_coeff(mol, method='nao', dm=None, s=None):
@@ -68,42 +79,97 @@ def orth_coeff(mol, method='nao', dm=None, s=None):
     if method in ('lso', 'lowdin'):
         # plain S^{-1/2} (no projection onto a reference AO basis)
         return pyscf_orth.lowdin(s)
-    if method == 'nao':
+    if method in ('nao', 'nao_pyscf'):
         if dm is None:
-            raise ValueError("a density matrix is required for method='nao'")
-        return nao_coeff(mol, dm, s)
+            raise ValueError(f"a density matrix is required for method='{method}'")
+        if method == 'nao':
+            return nao_coeff(mol, dm, s)
+        return nao_coeff_pyscf(mol, dm, s)
     if method == 'meta_lowdin':
         return pyscf_orth.orth_ao(mol, method='meta_lowdin', s=s)
     raise ValueError(f"unknown orbital basis '{method}'; choose from {ORBITAL_BASES} "
                      'or pass a transformation matrix')
 
 
-def nao_coeff(mol, dm, s=None):
-    """NAO transformation matrix built from the AO density matrix ``dm``.
-
-    Same algorithm as ``pyscf.lo.nao.nao`` (pre-NAO diagonalization per atom
-    and angular momentum, OWSO of the valence set, Loewdin orthogonalization
-    of the core and Rydberg sets, then restoration of the natural character),
-    but taking the density matrix explicitly instead of an SCF object.
-    """
-    if s is None:
-        s = mol.intor_symmetric('int1e_ovlp')
+def _spin_summed(dm):
     dm = numpy.asarray(dm)
     if dm.ndim == 3:  # (alpha, beta)
         dm = dm[0] + dm[1]
+    return dm
+
+
+def _fix_phase(c):
+    for i in range(c.shape[1]):
+        if c[i, i] < 0:
+            c[:, i] *= -1
+    return c
+
+
+def nao_coeff(mol, dm, s=None, min_weight=OWSO_MIN_WEIGHT):
+    """NAO transformation matrix (Reed-Weinstock-Weinhold procedure).
+
+    Steps
+    -----
+    1. pre-NAOs: diagonalize the spherically averaged atomic blocks of the
+       density operator S P S for every atom and angular momentum
+       (``pyscf.lo.nao._prenao_sub``); their eigenvalues are the pre-NAO
+       occupancies.
+    2. Partition into the natural minimal basis (NMB, core + valence shells
+       of the ground-state configuration) and the Rydberg set (NRB).
+    3. OWSO of all NMB pre-NAOs together, with the occupancies as weights
+       (weights below ``min_weight`` are raised to it).
+    4. Schmidt orthogonalization of the NRB pre-NAOs to the NMB set, then
+       OWSO of the NRB set with their occupancies as weights.
+    5. Restoration of the natural character (re-diagonalization of the
+       atomic blocks; skipped for Cartesian functions as in PySCF).  This
+       step is a rotation within each atom and does not affect the EDA.
+    """
+    if s is None:
+        s = mol.intor_symmetric('int1e_ovlp')
+    dm = _spin_summed(dm)
+    p = lib.dot(lib.dot(s, dm), s)
+    pre_occ, pre_nao = pyscf_nao._prenao_sub(mol, p, s)
+    core_lst, val_lst, ryd_lst = pyscf_nao._core_val_ryd_list(mol)
+    nmb = sorted(core_lst + val_lst)
+    nao = s.shape[0]
+    c = numpy.zeros((nao, nao))
+    weights = numpy.maximum(pre_occ, min_weight)
+    if nmb:
+        cn = pre_nao[:, nmb]
+        s1 = lib.dot(lib.dot(cn.T, s), cn)
+        c[:, nmb] = lib.dot(cn, pyscf_orth.weight_orth(s1, weights[nmb]))
+    if ryd_lst:
+        cr = pre_nao[:, ryd_lst].copy()
+        if nmb:
+            cn = c[:, nmb]
+            cr -= lib.dot(cn, lib.dot(lib.dot(cn.T, s), cr))      # Schmidt to NMB
+        s1 = lib.dot(lib.dot(cr.T, s), cr)
+        c[:, ryd_lst] = lib.dot(cr, pyscf_orth.weight_orth(s1, weights[ryd_lst]))
+    # remove round-off from the weighted orthogonalizations
+    c = lib.dot(c, pyscf_orth.lowdin(lib.dot(lib.dot(c.T, s), c)))
+    if not mol.cart:
+        p_nao = lib.dot(lib.dot(c.T, p), c)
+        c = lib.dot(c, pyscf_nao._prenao_sub(mol, p_nao, numpy.eye(nao))[1])
+    return _fix_phase(c)
+
+
+def nao_coeff_pyscf(mol, dm, s=None):
+    """NAO transformation matrix with the algorithm of ``pyscf.lo.nao.nao``.
+
+    Core: Loewdin orthogonalization; valence: OWSO with the core projected
+    out; Rydberg: Schmidt orthogonalization to core + valence followed by
+    Loewdin orthogonalization; then restoration of the natural character.
+    """
+    if s is None:
+        s = mol.intor_symmetric('int1e_ovlp')
+    dm = _spin_summed(dm)
     p = lib.dot(lib.dot(s, dm), s)
     pre_occ, pre_nao = pyscf_nao._prenao_sub(mol, p, s)
     cnao = pyscf_nao._nao_sub(mol, pre_occ, pre_nao, s)
     if not mol.cart:
-        # restore natural character (as in pyscf.lo.nao.nao with restore=True)
         p_nao = lib.dot(lib.dot(cnao.T, p), cnao)
-        s_nao = numpy.eye(p_nao.shape[0])
-        cnao = lib.dot(cnao, pyscf_nao._prenao_sub(mol, p_nao, s_nao)[1])
-    # fix the phase so that the diagonal is positive
-    for i in range(cnao.shape[1]):
-        if cnao[i, i] < 0:
-            cnao[:, i] *= -1
-    return cnao
+        cnao = lib.dot(cnao, pyscf_nao._prenao_sub(mol, p_nao, numpy.eye(p_nao.shape[0]))[1])
+    return _fix_phase(cnao)
 
 
 def check_orthonormal(x, s, tol=1e-8):

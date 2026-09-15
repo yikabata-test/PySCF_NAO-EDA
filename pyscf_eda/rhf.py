@@ -43,6 +43,20 @@ Partitioning schemes
   An effective core potential (ECP), if present, is a nucleus-electron
   interaction as well and is treated with the same rule.
 
+Kohn-Sham DFT (RKS)
+-------------------
+For a restricted KS-DFT object the exchange-correlation energy is
+partitioned on the numerical quadrature grid (Eq. 3 of the 2002 paper),
+
+    E_XC^A = sum_{g in A} w_g p_A(r_g) F_XC(r_g),
+
+where the grid points of atom A carry the Becke-type partition function
+p_A (PySCF stores the atom of every grid point in ``grids.atm_idx``, and
+``grids.weights`` already contain w_g p_A).  The exact-exchange part of a
+(range-separated) hybrid functional is partitioned by basis functions like
+the HF exchange, scaled with the functional's coefficients.  Non-local
+correlation (VV10) and dispersion corrections are not supported.
+
 Orbital basis (conventional, LSO- and NAO-EDA)
 ----------------------------------------------
 T. Baba, M. Takeuchi, H. Nakai, Chem. Phys. Lett. 424, 193 (2006).
@@ -151,6 +165,93 @@ def nuc_repulsion_by_atom(mol):
     return e_nn
 
 
+def becke_grids(mf_or_mol, level=None):
+    """Grids with Becke's original partition and Bragg-radius size adjustment.
+
+    This is the partition used by the EDA code of Nakai (HONDO99/GAMESS):
+    with it, Table 1 of Chem. Phys. Lett. 363, 73 (2002) is reproduced to
+    all printed digits (Cartesian cc-pVDZ, B3LYP with VWN-RPA).  PySCF's
+    default grids use the Treutler-Ahlrichs size adjustment instead, which
+    changes the atomic E_XC partition by up to ~0.1 hartree while leaving
+    the total energy unchanged.
+
+    Usage: ``mf.grids = becke_grids(mf)`` before running the SCF.
+    """
+    from pyscf import dft
+    from pyscf.dft import gen_grid, radi
+    mol = mf_or_mol.mol if hasattr(mf_or_mol, 'mol') else mf_or_mol
+    grids = dft.Grids(mol)
+    grids.becke_scheme = gen_grid.original_becke
+    grids.radii_adjust = radi.becke_atomic_radii_adjust
+    grids.atomic_radii = radi.BRAGG_RADII
+    if level is not None:
+        grids.level = level
+    return grids
+
+
+def is_dft(mf):
+    """True for a Kohn-Sham DFT object with a non-HF functional."""
+    from pyscf import dft
+    return isinstance(mf, dft.rks.KohnShamDFT)
+
+
+def xc_energy_by_atom(mf, xc_code=None, dm=None, grids=None):
+    """Grid partition of a functional energy: E_XC^A = sum_{g in A} w_g F_XC(r_g).
+
+    Parameters
+    ----------
+    mf : pyscf.dft.rks.RKS
+        Converged RKS object (its density and grids are used by default).
+    xc_code : str, optional
+        Functional to evaluate on the density (default ``mf.xc``).  Any
+        libxc expression is accepted, e.g. 'LDA_X', 'GGA_X_B88',
+        'LDA_C_VWN_RPA', 'GGA_C_LYP', which allows the decomposition of a
+        hybrid functional into its constituents.  The exact-exchange part
+        of a hybrid is *not* included (it is not a grid quantity).
+    dm : ndarray, optional
+        Spin-summed density matrix (default ``mf.make_rdm1()``).
+    grids : pyscf.dft.gen_grid.Grids, optional
+        Grids with ``atm_idx`` (default ``mf.grids``).
+
+    Returns
+    -------
+    ndarray (natm,)
+    """
+    mol = mf.mol
+    ni = mf._numint
+    if xc_code is None:
+        xc_code = mf.xc
+    if dm is None:
+        dm = mf.make_rdm1()
+    dm = numpy.asarray(dm)
+    if grids is None:
+        grids = mf.grids
+    if grids.coords is None:
+        grids.build(with_non0tab=True)
+    if getattr(grids, 'atm_idx', None) is None:
+        raise RuntimeError('grids.atm_idx is not available; rebuild the grids with '
+                           'grids.build() (PySCF >= 2.4)')
+    if ni.libxc.is_nlc(xc_code):
+        raise NotImplementedError('non-local correlation functionals are not supported')
+    xctype = ni._xc_type(xc_code)
+    if xctype == 'HF':
+        return numpy.zeros(mol.natm)
+    ao_deriv = 0 if xctype == 'LDA' else 1
+    make_rho, nset, nao = ni._gen_rho_evaluator(mol, dm, hermi=1, with_lapl=False)
+    exc_atoms = numpy.zeros(mol.natm)
+    p1 = 0
+    for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv):
+        p0, p1 = p1, p1 + weight.size
+        rho = make_rho(0, ao, mask, xctype)
+        exc = ni.eval_xc_eff(xc_code, rho, deriv=0, xctype=xctype, spin=0)[0]
+        den = (rho if xctype == 'LDA' else rho[0]) * weight
+        contrib = den * exc
+        idx = grids.atm_idx[p0:p1]
+        keep = idx >= 0                      # padding points carry atm_idx = -1
+        exc_atoms += numpy.bincount(idx[keep], weights=contrib[keep], minlength=mol.natm)
+    return exc_atoms
+
+
 class EDAResult:
     """Container for the atomic energy densities of one EDA calculation.
 
@@ -164,8 +265,9 @@ class EDAResult:
     e_ne   : nucleus-electron attraction (incl. ECP) E_Ne^A
     e_1el  : one-electron energy       E_1EL^A = T_S^A + E_Ne^A (+ E_other^A)
     e_coul : Coulomb energy            E_CLB^A
-    e_x    : exact exchange energy     E_X^A
-    e_elec : electronic energy         E_ELC^A = E_1EL^A + E_CLB^A + E_X^A
+    e_x    : exact exchange energy     E_X^A (scaled by the hybrid coefficient for DFT)
+    e_xc   : DFT exchange-correlation energy E_XC^A (grid partition; zero for HF)
+    e_elec : electronic energy         E_ELC^A = E_1EL^A + E_CLB^A + E_X^A (+ E_XC^A)
     e_tot  : total energy              E_TOT^A = E_NN^A + E_ELC^A
     e_other: one-electron terms present in ``mf.get_hcore()`` that are not
              T + V_nuc + V_ecp (e.g. external fields), Mulliken-partitioned.
@@ -180,7 +282,7 @@ class EDAResult:
     ref_energy_label = 'SCF total energy'
     labels = {
         'e_nn': 'E_NN', 'e_kin': 'T_S', 'e_ne': 'E_Ne', 'e_other': 'E_other',
-        'e_1el': 'E_1EL', 'e_coul': 'E_CLB', 'e_x': 'E_X',
+        'e_1el': 'E_1EL', 'e_coul': 'E_CLB', 'e_x': 'E_X', 'e_xc': 'E_XC',
         'e_elec': 'E_ELC', 'e_tot': 'E_TOT',
     }
 
@@ -196,8 +298,12 @@ class EDAResult:
         self.e_other = kwargs.get('e_other', numpy.zeros(mol.natm))
         self.e_coul = kwargs['e_coul']
         self.e_x = kwargs['e_x']
+        self.e_xc = kwargs.get('e_xc')
+        self.xc = kwargs.get('xc')            # functional name for DFT, None for HF
         self.e_1el = self.e_kin + self.e_ne + self.e_other
         self.e_elec = self.e_1el + self.e_coul + self.e_x
+        if self.e_xc is not None:
+            self.e_elec = self.e_elec + self.e_xc
         self.e_tot = self.e_nn + self.e_elec
         self.e_tot_scf = kwargs.get('e_tot_scf')
 
@@ -210,6 +316,8 @@ class EDAResult:
         keys = list(self.components)
         if numpy.any(self.e_other != 0):
             keys.insert(3, 'e_other')
+        if self.e_xc is not None:
+            keys.insert(keys.index('e_x') + 1, 'e_xc')
         return {k: getattr(self, k) for k in keys}
 
     def summary(self, atoms=None):
@@ -229,8 +337,9 @@ class EDAResult:
         header = f"{'Component':<10}" + ''.join(
             f"{f'{mol.atom_symbol(ia)}{ia}':>{width}}" for ia in atoms)
         header += f"{'Sum':>{width}}"
+        method = f'RKS {self.xc}' if self.xc is not None else 'RHF'
         lines = [
-            f"Energy density analysis (RHF), orbital_basis='{self.orbital_basis}', "
+            f"Energy density analysis ({method}), orbital_basis='{self.orbital_basis}', "
             f"ne_partition='{self.ne_partition}'",
             'Energies in hartree', header, '-' * len(header)]
         if self.pop is not None:
@@ -301,16 +410,19 @@ class EDA(lib.StreamObject):
         self.tol_energy = 1e-8   # tolerance for the sum-rule check
 
     @staticmethod
-    def _check_mf(mf):
+    def _check_mf(mf, allow_dft=True):
         if not isinstance(mf, scf.hf.RHF):
-            raise TypeError('EDA for closed-shell RHF requires a pyscf.scf.hf.RHF '
-                            f'object, got {type(mf)}')
+            raise TypeError('EDA for closed-shell RHF/RKS requires a pyscf.scf.hf.RHF '
+                            f'(or dft.rks.RKS) object, got {type(mf)}')
         if isinstance(mf, scf.uhf.UHF) or isinstance(mf, scf.rohf.ROHF):
-            raise NotImplementedError('Open-shell (UHF/ROHF) EDA is not implemented')
-        if hasattr(mf, 'xc'):
-            raise NotImplementedError(
-                'KS-DFT (exchange-correlation) EDA is not implemented; '
-                'use a pure Hartree-Fock object')
+            raise NotImplementedError('Open-shell (UHF/ROHF/UKS) EDA is not implemented')
+        if is_dft(mf):
+            if not allow_dft:
+                raise TypeError('a Hartree-Fock reference is required, got a KS-DFT object')
+            if getattr(mf, 'nlc', None) or mf._numint.libxc.is_nlc(mf.xc):
+                raise NotImplementedError('non-local correlation (VV10) is not supported')
+            if getattr(mf, 'disp', None) or getattr(mf, 'do_disp', lambda: False)():
+                raise NotImplementedError('dispersion corrections are not supported')
 
     def kernel(self, dm=None):
         mf = self._scf
@@ -379,16 +491,34 @@ class EDA(lib.StreamObject):
 
         e_other = partition(dm, h_other) if has_other else numpy.zeros(mol.natm)
 
-        vj, vk = mf.get_jk(mol, dm)
-        e_coul = 0.5 * partition(dm, vj)
-        e_x = -0.25 * partition(dm, vk)
+        e_xc = None
+        xc = None
+        if is_dft(mf):
+            xc = mf.xc
+            ni = mf._numint
+            omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
+            vj = mf.get_j(mol, dm)
+            e_coul = 0.5 * partition(dm, vj)
+            if abs(hyb) > 1e-10 or abs(alpha) > 1e-10:
+                vk = mf.get_k(mol, dm) * hyb
+                if abs(omega) > 1e-10:
+                    vk += mf.get_k(mol, dm, omega=omega) * (alpha - hyb)
+                e_x = -0.25 * partition(dm, vk)
+            else:
+                e_x = numpy.zeros(mol.natm)
+            e_xc = xc_energy_by_atom(mf, mf.xc, dm)
+            log.info('E_XC = %.10f (grid partition, %d points)', e_xc.sum(), mf.grids.weights.size)
+        else:
+            vj, vk = mf.get_jk(mol, dm)
+            e_coul = 0.5 * partition(dm, vj)
+            e_x = -0.25 * partition(dm, vk)
 
         pop = partition(dm, s_mat)   # Mulliken / Loewdin / natural populations
 
         self.result = EDAResult(mol, self.ne_partition, basis_name,
                                 e_nn=e_nn, e_kin=e_kin, e_ne=e_ne, e_other=e_other,
-                                e_coul=e_coul, e_x=e_x, pop=pop, orth_coeff=x,
-                                e_tot_scf=mf.e_tot if mf.converged else None)
+                                e_coul=e_coul, e_x=e_x, e_xc=e_xc, xc=xc, pop=pop,
+                                orth_coeff=x, e_tot_scf=mf.e_tot if mf.converged else None)
 
         # --- sum-rule check ---------------------------------------------
         e_sum = self.result.e_tot.sum()

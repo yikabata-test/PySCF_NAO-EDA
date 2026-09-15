@@ -119,13 +119,15 @@ def test_ghost_atom():
     assert res.e_nn[2] == 0.0
 
 
-def test_rejects_uhf_and_dft():
+def test_rejects_open_shell():
     from pyscf import dft
     mol = gto.M(atom='H 0 0 0; H 0 0 0.74', basis='sto-3g', verbose=0)
     with pytest.raises(TypeError):
         eda_rhf.EDA(scf.UHF(mol))
+    with pytest.raises((TypeError, NotImplementedError)):
+        eda_rhf.EDA(dft.UKS(mol))
     with pytest.raises(NotImplementedError):
-        eda_rhf.EDA(dft.RKS(mol))
+        eda_rhf.EDA(scf.ROHF(mol))
 
 
 def test_summary_output(h2o_rhf):
@@ -139,7 +141,7 @@ def test_summary_output(h2o_rhf):
 # NAO-EDA / LSO-EDA (Baba, Takeuchi, Nakai, CPL 424, 193 (2006))
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize('orbital_basis', ('nao', 'lso', 'lowdin', 'meta_lowdin'))
+@pytest.mark.parametrize('orbital_basis', ('nao', 'nao_pyscf', 'lso', 'lowdin', 'meta_lowdin'))
 def test_orthogonal_basis_sum_rules(h2o_rhf, orbital_basis):
     mf = h2o_rhf
     mol = mf.mol
@@ -177,7 +179,7 @@ def test_ao_basis_is_conventional_eda(h2o_rhf):
     assert numpy.allclose(res.pop, ref_pop, atol=1e-10)
 
 
-def test_nao_populations_match_pyscf_npa(h2o_rhf):
+def test_nao_pyscf_populations_match_pyscf_npa(h2o_rhf):
     from pyscf.lo import orth as pyscf_orth
     mf = h2o_rhf
     mol = mf.mol
@@ -186,9 +188,28 @@ def test_nao_populations_match_pyscf_npa(h2o_rhf):
     c = pyscf_orth.orth_ao(mf, method='nao', s=s)
     p_nao = c.T @ s @ dm @ s @ c
     ref = [p_nao.diagonal()[p0:p1].sum() for _, _, p0, p1 in mol.aoslice_by_atom()]
-    res = eda_rhf.nao_eda(mf)
+    res = eda_rhf.kernel(mf, orbital_basis='nao_pyscf')
     assert numpy.allclose(res.pop, ref, atol=1e-8)
     assert numpy.allclose(abs(res.orth_coeff), abs(c), atol=1e-8)
+
+
+def test_nao_reed_weinhold_properties(h2o_rhf):
+    from pyscf_eda import orth
+    from pyscf.lo import nao as pyscf_nao
+    mf = h2o_rhf
+    mol = mf.mol
+    dm = mf.make_rdm1()
+    s = mol.intor_symmetric('int1e_ovlp')
+    x = orth.nao_coeff(mol, dm, s)
+    assert numpy.allclose(x.T @ s @ x, numpy.eye(mol.nao), atol=1e-10)
+    # the NMB (core+valence) block carries almost all electrons
+    core, val, ryd = pyscf_nao._core_val_ryd_list(mol)
+    p_nao = x.T @ s @ dm @ s @ x
+    occ = numpy.einsum('ii->i', p_nao)
+    assert occ[core + val].sum() > 9.9
+    assert occ[ryd].sum() < 0.1
+    res = eda_rhf.nao_eda(mf)
+    assert numpy.allclose(res.pop, [occ[p0:p1].sum() for _, _, p0, p1 in mol.aoslice_by_atom()], atol=1e-8)
 
 
 def test_lso_populations_are_lowdin_populations(h2o_rhf):

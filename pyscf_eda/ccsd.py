@@ -152,7 +152,7 @@ class EDA(eda_mp2.EDA):
                             f'got {type(mycc)}')
         if not isinstance(mycc._scf, scf.hf.RHF) or isinstance(mycc._scf, scf.uhf.UHF):
             raise TypeError('CCSD-EDA requires an RHF reference')
-        eda_rhf.EDA._check_mf(mycc._scf)
+        eda_rhf.EDA._check_mf(mycc._scf, allow_dft=False)
 
     def _ensure_amplitudes(self):
         mycc = self._cc

@@ -162,8 +162,9 @@ class CorrEDAResult(EDAResult):
         self.orbital_basis = hf.orbital_basis
         self.orth_coeff = hf.orth_coeff
         self.pop = hf.pop
-        for key in ('e_nn', 'e_kin', 'e_ne', 'e_other', 'e_1el', 'e_coul', 'e_x', 'e_elec'):
-            setattr(self, key, getattr(hf, key))
+        for key in ('e_nn', 'e_kin', 'e_ne', 'e_other', 'e_1el', 'e_coul', 'e_x', 'e_elec',
+                    'e_xc', 'xc'):
+            setattr(self, key, getattr(hf, key, None))
         self.hf_result = hf
         self.e_hf = hf.e_tot
         self.w_occ = w_occ

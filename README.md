@@ -24,9 +24,9 @@ PySCF 上でエネルギー密度解析 (Energy Density Analysis, EDA) を行い
   complete basis set limit", *J. Comput. Chem.* **37**, 2304–2315 (2016). — QDD / QTD 等の
   CBS 極限のフィッティングモデル
 
-現在は **閉殻 Hartree–Fock (RHF)**，**閉殻 MP2**，**閉殻 CCSD**，**閉殻 CCSD(T)** に対する
-従来型 EDA，LSO-EDA，NAO-EDA と，それらを組み合わせた **完全基底極限 (CBS) の原子エネルギー**
-(QDD / QTD / QTT / QTN) を実装しています
+現在は **閉殻 Hartree–Fock (RHF)**，**閉殻 Kohn–Sham DFT (RKS)**，**閉殻 MP2**，**閉殻 CCSD**，
+**閉殻 CCSD(T)** に対する従来型 EDA，LSO-EDA，NAO-EDA と，それらを組み合わせた
+**完全基底極限 (CBS) の原子エネルギー** (QDD / QTD / QTT / QTN) を実装しています
 (`pyscf_eda.rhf`, `pyscf_eda.mp2`, `pyscf_eda.ccsd`, `pyscf_eda.ccsd_t`, `pyscf_eda.cbs`,
 `pyscf_eda.orth`)。
 
@@ -97,6 +97,45 @@ $$E_{TOT} = E_{NN} + T_S + E_{Ne} + E_{CLB} + E_X$$
   全てを原子核で分割する場合は `ne_partition='nuclear'` を指定します。
   有効内殻ポテンシャル (ECP) も核–電子相互作用として同じ規則で分割されます。
 
+## Kohn–Sham DFT (RKS) の EDA
+
+`pyscf.dft.RKS` オブジェクトを渡すと DFT の EDA になります。交換相関エネルギーは論文 (2002) の
+式 (3) のとおり，グリッド点ごとに Becke 型分割関数を含む重み $w_g p_A(r_g)$ で原子に分割します
+(PySCF のグリッドは各点の所属原子 `grids.atm_idx` を保持しています)。ハイブリッド汎関数の
+厳密交換は係数 (レンジ分離ハイブリッドを含む) を掛けて基底関数で分割します。
+結果には `e_xc` (グリッド分割した汎関数部分) が加わり，`e_x` はハイブリッド係数を掛けた厳密交換です。
+VV10 などの非局所相関と分散補正は未対応です。
+
+```python
+from pyscf import dft
+mf = dft.RKS(mol, xc='B3LYP')
+mf.grids = eda_rhf.becke_grids(mf)     # 原著 (HONDO99/GAMESS) と同じ Becke 分割 (Bragg 半径)
+mf.run()
+res = eda_rhf.EDA(mf).kernel()
+print(res.e_xc, res.e_x, res.e_tot)
+# 汎関数の成分 (Slater, B88, VWN, LYP など) の原子分割
+slater = eda_rhf.xc_energy_by_atom(mf, 'LDA_X')
+```
+
+**グリッド分割関数について:** PySCF 既定のグリッドは Treutler–Ahlrichs のサイズ補正を用いますが，
+原著の EDA コードは Becke 原法＋Bragg 半径のサイズ補正です。全エネルギーは変わりませんが原子ごとの
+$E_{XC}$ が最大 0.1 hartree 程度変わるので，論文と比較する場合は `becke_grids` を使ってください。
+
+### 原著論文との一致 (DFT)
+
+* **H2O, B3LYP/cc-pVDZ (Nakai 2002, Table 1):** デカルト型 d 関数，VWN-RPA 版 B3LYP
+  (PySCF の `'B3LYP'`)，Becke–Bragg 分割，核–電子引力の半分ずつの分割 (`ne_partition='half'`) で，
+  H・O・分子の全成分 (E_NN, T_S, E_Ne, E_CLB, E_X^HF, Slater, B88, VWN, LYP, E_TOT) が論文の
+  全桁 (1e-4 hartree 以内) で一致します (`examples/h2o_b3lyp_table1.py`, `tests/test_rks_eda.py`)。
+  核–電子引力を全て基底関数で分割する `'mulliken'` では E_Ne が 0.07 hartree ずれるので，
+  原著コードの分割は `'half'` です。
+* **CO2, B3LYP (Baba–Takeuchi–Nakai 2006, Table 1–2):** GAMESS 既定の VWN5 版 B3LYP
+  (`'B3LYP5'`) とデカルト型関数で全エネルギー (−188.51822 vs −188.51825) と Mulliken 電子数 (5.670)
+  が一致します。NAO-EDA は NAO の構成法に敏感で，`pyscf.lo.nao` の簡略版では C 原子エネルギーが
+  論文より 0.39 hartree 低くなりますが，Reed–Weinstock–Weinhold の手順 (NMB を一括 OWSO，NRB を
+  Schmidt 直交化後 OWSO; 本パッケージの `'nao'`) では −39.4397 vs 論文 −39.44289 (比率 20.92 % で一致)，
+  NPA 4.961 vs 4.981 となります。基底系列全体の比較は `examples/co2_b3lyp_2006.py` を参照してください。
+
 ## NAO-EDA / LSO-EDA (軌道基底の選択)
 
 従来型 EDA の基底関数による分割は Mulliken population analysis と同じ性質をもち，
@@ -111,7 +150,8 @@ $$P' = X^{-1} P X^{-1\dagger},\qquad M' = X^\dagger M X,\qquad
 
 | `orbital_basis` | 内容 | 対応する population |
 |---|---|---|
-| `'nao'` (既定) | 自然原子軌道 (NAO)，NAO-EDA。`pyscf.lo.nao` の OWSO 変換を使用 | Natural (NPA) |
+| `'nao'` (既定) | 自然原子軌道 (NAO)，NAO-EDA。Reed–Weinstock–Weinhold (1985) の手順 (NMB を一括 OWSO，NRB を Schmidt 直交化後 OWSO) | Natural (NPA) |
+| `'nao_pyscf'` | `pyscf.lo.nao` の簡略版 NAO (参考。CO2 の C 原子エネルギーが `'nao'` と 0.4 hartree 異なる) | PySCF NPA |
 | `'ao'` | 生の AO ($X=1$)，従来型 (Mulliken 型) EDA | Mulliken (MPA) |
 | `'lso'` / `'lowdin'` | Löwdin 対称直交化 ($X=S^{-1/2}$)，LSO-EDA | Löwdin (LPA) |
 | `'meta_lowdin'` | PySCF の meta-Löwdin 軌道 (参考) | meta-Löwdin |
@@ -312,7 +352,9 @@ print(hfres.estimates['feller']['atoms'], hfres.estimates['feller_alpha'])
   孤立原子からの差 (Table 1 の括弧内に相当) は，孤立原子を通常の UHF で計算して求めます
   (単一原子ではその全エネルギーがそのまま原子エネルギーになるため EDA は不要です)。
 * `examples/h2o_bond_breaking.py` – O–H 結合伸長 (2002 年論文 Table 2 に対応) に伴う原子エネルギーの変化
-* `examples/co2_nao_eda.py` – CO2 での従来型 / LSO- / NAO-EDA の基底関数依存性 (2006 年論文 Table 1, 2 に対応)
+* `examples/co2_nao_eda.py` – CO2 (RHF) での従来型 / LSO- / NAO-EDA の基底関数依存性
+* `examples/h2o_b3lyp_table1.py` – H2O, B3LYP/cc-pVDZ の EDA (2002 年論文 Table 1 の再現)
+* `examples/co2_b3lyp_2006.py` – CO2, B3LYP の各基底での MPA/LPA/NPA と EDA/LSO/NAO-EDA (2006 年論文 Table 1, 2 との比較)
 * `examples/h2o_mp2_eda.py` – H2O の MP2-EDA (占有側 / 仮想側分割の比較，NAO 基底，UMP2 孤立原子との差)
 * `examples/h2o_ccsd_eda.py` – H2O の CCSD-EDA (MP2-EDA との比較，NAO 基底，UCCSD 孤立原子との差)
 * `examples/h2o_ccsd_t_eda.py` – H2O の CCSD(T)-EDA ($U^{0,0}$ / $U^{2,2}$，$E_T^{[4]}$ / $E_{ST}^{[5]}$，UCCSD(T) 孤立原子との差)
@@ -321,8 +363,8 @@ print(hfres.estimates['feller']['atoms'], hfres.estimates['feller_alpha'])
 
 ## 制限事項
 
-* 現在は閉殻 RHF，閉殻 MP2，閉殻 CCSD，閉殻 CCSD(T) のみ対応しています (UHF/ROHF, UMP2,
-  UCCSD, KS-DFT は未対応で例外を出します)。検証などで孤立原子のエネルギーが必要な場合は，
+* 現在は閉殻 RHF / RKS，閉殻 MP2，閉殻 CCSD，閉殻 CCSD(T) のみ対応しています (UHF/ROHF/UKS,
+  UMP2, UCCSD は未対応で例外を出します。MP2/CC の EDA は HF 参照のみ)。検証などで孤立原子のエネルギーが必要な場合は，
   通常の UHF / UMP2 / UCCSD(T) 計算を用いてください。
 * MP2-/CCSD-EDA は原子ごとに半変換積分 $(la|jb)$, $(il|jb)$ を作るため，メモリは
   $O(n_A n_{vir} n_{occ} n_{vir})$，計算量は原子数 × 積分変換のコストになります。

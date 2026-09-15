@@ -124,7 +124,7 @@ class EDA(lib.StreamObject):
         if not isinstance(mp, pyscf_mp.mp2.RMP2):
             raise TypeError('MP2-EDA requires a closed-shell pyscf.mp.mp2.RMP2 object, '
                             f'got {type(mp)}')
-        eda_rhf.EDA._check_mf(mp._scf)
+        eda_rhf.EDA._check_mf(mp._scf, allow_dft=False)
 
     def _ensure_amplitudes(self):
         mp = self._mp
