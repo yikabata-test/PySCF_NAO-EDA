@@ -20,10 +20,15 @@ PySCF 上でエネルギー密度解析 (Energy Density Analysis, EDA) を行い
 * M. Kobayashi, H. Nakai, "Divide-and-conquer-based linear-scaling approach for traditional and
   renormalized coupled cluster methods with single, double, and noniterative triple excitations",
   *J. Chem. Phys.* **131**, 114108 (2009). — (T) 補正の分割 (Sec. II B)
+* J. Seino, H. Nakai, "Informatics-based energy fitting scheme for correlation energy at
+  complete basis set limit", *J. Comput. Chem.* **37**, 2304–2315 (2016). — QDD / QTD 等の
+  CBS 極限のフィッティングモデル
 
 現在は **閉殻 Hartree–Fock (RHF)**，**閉殻 MP2**，**閉殻 CCSD**，**閉殻 CCSD(T)** に対する
-従来型 EDA，LSO-EDA，NAO-EDA を実装しています
-(`pyscf_eda.rhf`, `pyscf_eda.mp2`, `pyscf_eda.ccsd`, `pyscf_eda.ccsd_t`, `pyscf_eda.orth`)。
+従来型 EDA，LSO-EDA，NAO-EDA と，それらを組み合わせた **完全基底極限 (CBS) の原子エネルギー**
+(QDD / QTD / QTT / QTN) を実装しています
+(`pyscf_eda.rhf`, `pyscf_eda.mp2`, `pyscf_eda.ccsd`, `pyscf_eda.ccsd_t`, `pyscf_eda.cbs`,
+`pyscf_eda.orth`)。
 
 ## インストール
 
@@ -220,6 +225,46 @@ print(res.e_ccsd, res.e_t, res.e_t4, res.e_st5, res.e_tot)
 原子ごとの部分変換積分 $O(N_{atom}\,o\,v^3)$) なので，小〜中規模分子向けです。
 論文の renormalized CCSD(T) (R-CCSD(T)) は未実装です。
 
+## CBS 極限の原子エネルギー (QDD / QTD)
+
+Seino–Nakai (2016) の 3 スキーム線形フィッティング (3SLF) は，階層的基底 cc-pVXZ / aug-cc-pVXZ
+での相関エネルギーの線形結合で CCSD(T)/CBS の相関エネルギーを推定します (式 (21))。
+
+$$E_{corr}^{CBS} = \sum_X c^L_X E_{MP2}[X] + \sum_X c^M_X E_{CCSD}[X] + \sum_X c^H_X E_{CCSD(T)}[X]$$
+
+| モデル | 使用するエネルギー | 実行する計算 |
+|---|---|---|
+| QDD | MP2/D,T,Q; CCSD/D; CCSD(T)/D | CCSD(T)/DZ，MP2/TZ，MP2/QZ |
+| QTD | MP2/D,T,Q; CCSD/D,T; CCSD(T)/D | CCSD(T)/DZ，CCSD/TZ，MP2/QZ |
+| QTT | MP2/D,T,Q; CCSD/D,T; CCSD(T)/D,T | CCSD(T)/DZ，CCSD(T)/TZ，MP2/QZ |
+| QTN | MP2/D,T,Q; CCSD/D,T | CCSD/DZ，CCSD/TZ，MP2/QZ |
+
+係数は論文 Table 11 (cc-pVXZ, aug-cc-pVXZ) の値です。各基底では 1 本の計算の連鎖
+(HF → MP2 → CCSD → (T)) から下位レベルのエネルギーも同時に得るので，MP2/DZ や CCSD/DZ の
+ための追加計算はありません (MP2/TZ は TZ 基底での計算が必要です)。
+モデルもすべての EDA も相関エネルギーについて線形なので，原子ごとの相関エネルギーにも同じ係数を
+適用でき，$\sum_A E_{corr}^{CBS,A} = E_{corr}^{CBS}$ が成り立ちます。論文と同じく frozen core
+(化学的コア軌道) の相関エネルギーを既定とします。
+
+```python
+from pyscf import gto
+from pyscf_eda import cbs as eda_cbs
+
+mol = gto.M(atom='O 0 0 0; H 0 0.757 0.586; H 0 -0.757 0.586')   # 基底は自動で置き換え
+res = eda_cbs.QTD(mol).kernel()             # または eda_cbs.CompositeEDA(mol, scheme='QDD')
+print(res.summary())
+print(res.e_corr)      # CBS 極限の原子相関エネルギー
+print(res.e_tot)       # E_HF^A (参照) + E_corr^{CBS,A}
+print(res.corr)        # {(手法, 基底): 各レベルの原子相関エネルギー}
+print(res.eda_results) # 各レベルの EDA 結果オブジェクト
+```
+
+主なオプション: `basis_family='cc-pv' | 'aug-cc-pv'`，`frozen='auto' | int`，
+`orbital_basis='ao' | 'nao' | 'lso'`，`ne_partition`，`w_occ`。
+HF 部分はフィッティングモデルの対象外なので，既定では最大基底 (QZ) の原子 HF エネルギーを用います
+(`hf_cbs='largest'`)。`hf_cbs='karton-martin'` で Karton–Martin の 2 点 (TZ, QZ) HF 外挿
+(エネルギーについて線形) を選べます。
+
 ## 例
 
 * `examples/h2o_rhf_eda.py` – 論文 Table 1 と同じ H2O 構造 (cc-pVDZ) での RHF-EDA。
@@ -230,6 +275,7 @@ print(res.e_ccsd, res.e_t, res.e_t4, res.e_st5, res.e_tot)
 * `examples/h2o_mp2_eda.py` – H2O の MP2-EDA (占有側 / 仮想側分割の比較，NAO 基底，UMP2 孤立原子との差)
 * `examples/h2o_ccsd_eda.py` – H2O の CCSD-EDA (MP2-EDA との比較，NAO 基底，UCCSD 孤立原子との差)
 * `examples/h2o_ccsd_t_eda.py` – H2O の CCSD(T)-EDA ($U^{0,0}$ / $U^{2,2}$，$E_T^{[4]}$ / $E_{ST}^{[5]}$，UCCSD(T) 孤立原子との差)
+* `examples/h2o_cbs_eda.py` – H2O の QDD / QTD による CBS 極限の原子エネルギー
 
 ## 制限事項
 
