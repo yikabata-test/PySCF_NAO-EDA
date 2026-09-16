@@ -66,10 +66,13 @@ three-quarter transformed integrals carrying the one-centre index l:
                                                  - sum_{mjk} Q_mjck (mj|lk) ] .
 
 The work is O(o^3 v^4) for P (the cost of one (T) evaluation) plus
-O(o v^3 N) for the final contractions, independent of the number of atoms;
-memory is O(o^3 v^2) per virtual block, O(o v^3) for P and the (be|ck)
-integrals, and the (be|cl) integrals are generated in blocks of b bounded
-by ``max_memory``.
+O(o v^3 N) for the final contractions, independent of the number of atoms.
+The W blocks are built for one virtual index a and a block of b at a time
+(memory O(o^3 v n_b), n_b from ``max_memory``); P and the (be|ck) integrals
+take O(o v^3), and the (be|cl) integrals are generated in blocks of b.
+In numpy the block assembly is memory-bandwidth bound: for butane/cc-pVDZ
+the partition takes about 15 times the (T) energy evaluation of PySCF's
+C kernel (with_t4=False), independent of the number of atoms.
 
 The renormalized R-CCSD(T) variants of the paper are not implemented.
 """
@@ -251,7 +254,7 @@ def triples_by_atom(mycc, x=None, t1=None, t2=None, mo_energy=None, verbose=None
     ----------
     with_t4 : bool
         Also split every atomic (T) energy into E_T[4]^A and E_ST[5]^A
-        (default True; costs about 40 % more).
+        (default True; costs about 20 % more).
 
     Returns
     -------
@@ -397,7 +400,7 @@ class EDA(eda_ccsd.EDA):
     occupied-side partitions (CCSD: occupied orbital i; (T): U^{0,0}) against
     the virtual-side ones (CCSD: virtual orbital a; (T): U^{2,2}).
     ``with_t4`` (default True) also resolves E_(T)^A into E_T[4]^A and
-    E_ST[5]^A; ``with_t4=False`` saves about 40 % of the partition time.
+    E_ST[5]^A; ``with_t4=False`` saves about 20 % of the partition time.
 
     Examples
     --------
