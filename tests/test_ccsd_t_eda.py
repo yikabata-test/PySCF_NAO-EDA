@@ -93,12 +93,10 @@ def test_w_block_matches_full_tensor(h2o_ccsd):
     mycc = h2o_ccsd
     w_full, _, _, _ = _full_tensors(mycc)
     c_occ, c_vir = corr.active_orbitals(mycc)
-    x = numpy.eye(mycc.mol.nao)
-    xinv = x
-    g_atoms, h_atoms = eda_ccsd_t._partitioned_integrals(
-        mycc.mol, corr.eri_transformer(mycc), c_occ, c_vir, x, xinv @ c_occ, xinv @ c_vir, 'occ')
-    g = sum(g_atoms)
-    h = sum(h_atoms)
+    nocc, nvir = c_occ.shape[1], c_vir.shape[1]
+    transform = corr.eri_transformer(mycc)
+    g = transform((c_vir, c_vir, c_vir, c_occ)).reshape(nvir, nvir, nvir, nocc)
+    h = transform((c_occ, c_occ, c_vir, c_occ)).reshape(nocc, nocc, nvir, nocc)
     for a in (0, 3, c_vir.shape[1] - 1):
         w_blk = eda_ccsd_t._w_block(mycc.t2, g, h, a)
         assert numpy.allclose(w_blk, w_full[:, :, :, a], atol=1e-12)

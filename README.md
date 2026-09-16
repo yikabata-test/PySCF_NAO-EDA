@@ -328,8 +328,14 @@ res = eda_ccsd_t.EDA(mycc).kernel()           # E_HF^A + E_corr(CCSD)^A + E_(T)^
 print(res.e_ccsd, res.e_t, res.e_t4, res.e_st5, res.e_tot)
 ```
 
-計算量・メモリは通常の (T) と同程度 ($O(o^3v^4)$，仮想軌道ブロックごとに $O(o^3v^2)$ と
-原子ごとの部分変換積分 $O(N_{atom}\,o\,v^3)$) なので，小〜中規模分子向けです。
+実装では，原子ごとに $R^A$ を組み立てる代わりに，原子に依存しない縮約
+$P_{beck}=\sum_{ija} Y_{ijk}^{abc} t_{ij}^{ae}$, $Q_{mjck}=\sum_{iab} Y_{ijk}^{abc} t_{im}^{ab}$
+($Y = 2\,r_3(W+Z)/D$) を先に行い，原子 (軌道 $l$) への帰属は 3/4 変換積分 $(be|cl)$, $(mj|cl)$
+(U$^{2,2}$ では $(be|lk)$, $(mj|lk)$) との最後の 1 添字の縮約だけで済ませます。
+計算量は $P$ の $O(o^3v^4)$ ((T) 1 回分) と $O(o\,v^3 N)$ で原子数に依存せず，メモリは
+$O(o^3v^2)$ (仮想ブロックごと) と $O(o\,v^3)$ ($P$ と $(be|ck)$) で，$(be|cl)$ は `max_memory` に
+収まるブロックで生成します。ブタン/cc-pVDZ (14 原子) で，原子ごとに $R^A$ を作る旧実装の
+707 秒から 4 スレッドで数十秒に短縮されました。
 論文の renormalized CCSD(T) (R-CCSD(T)) は未実装です。
 
 ## CBS 極限の原子エネルギー (QDD / QTD)
