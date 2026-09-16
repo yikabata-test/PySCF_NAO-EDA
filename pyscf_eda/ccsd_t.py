@@ -120,44 +120,144 @@ class CCSDTEDAResult(CorrEDAResult):
         return dict(CorrEDAResult.labels.fget(self), e_ccsd='E_corr(CCSD)', e_t='E_(T)')
 
 
-def _r3(w):
-    """Closed-shell triples permutation operator acting on the (i, j, k) axes 0-2."""
-    return (4 * w + w.transpose(1, 2, 0, 3, 4) + w.transpose(2, 0, 1, 3, 4)
-            - 2 * w.transpose(2, 1, 0, 3, 4) - 2 * w.transpose(0, 2, 1, 3, 4)
-            - 2 * w.transpose(1, 0, 2, 3, 4))
+def _r3(w, out=None):
+    """Closed-shell triples permutation operator acting on the (i, j, k) axes 0-2.
+
+    r3(w) = 4 w_ijk + w_jki + w_kij - 2 w_kji - 2 w_ikj - 2 w_jik, evaluated
+    with in-place accumulation (the trailing axes stay contiguous).
+    """
+    if out is None:
+        out = numpy.empty_like(w)
+    numpy.multiply(w, 4.0, out=out)
+    out += w.transpose(1, 2, 0, 3, 4)
+    out += w.transpose(2, 0, 1, 3, 4)
+    tmp = w.transpose(2, 1, 0, 3, 4) + w.transpose(0, 2, 1, 3, 4)
+    tmp += w.transpose(1, 0, 2, 3, 4)
+    tmp *= 2.0
+    out -= tmp
+    return out
 
 
-def _w_block(t2, g, h, a):
-    """W_ijk^abc = P R for fixed a, from the six pair permutations of R."""
-    t2a = t2[:, :, a, :]        # t_ij^{a e}
-    t2xa = t2[:, :, :, a]       # t_ij^{e a}
-    ga = g[a]                   # (ae|ck)
-    gxa = g[:, :, a, :]         # (be|ak)
-    hxa = h[:, :, a, :]         # (mj|ak)
-    w = lib.einsum('ije,beck->ijkbc', t2a, g)          # R_ijk^abc
-    w -= lib.einsum('imb,mjck->ijkbc', t2a, h)
-    w += lib.einsum('ike,cebj->ijkbc', t2a, g)         # R_ikj^acb
-    w -= lib.einsum('imc,mkbj->ijkbc', t2a, h)
-    w += lib.einsum('jibe,eck->ijkbc', t2, ga)         # R_jik^bac
-    w -= lib.einsum('jmb,mick->ijkbc', t2xa, h)
-    w += lib.einsum('jkbe,cei->ijkbc', t2, gxa)        # R_jki^bca
-    w -= lib.einsum('jmbc,mki->ijkbc', t2, hxa)
-    w += lib.einsum('kice,ebj->ijkbc', t2, ga)         # R_kij^cab
-    w -= lib.einsum('kmc,mibj->ijkbc', t2xa, h)
-    w += lib.einsum('kjce,bei->ijkbc', t2, gxa)        # R_kji^cba
-    w -= lib.einsum('kmcb,mji->ijkbc', t2, hxa)
+class _TriplesOperands:
+    """Amplitudes and integrals rearranged once so that every term of W is a
+    plain matrix multiplication whose natural output layout ends with the
+    virtual index c (or with b, c), see ``_w_block``."""
+
+    def __init__(self, t2, g, h):
+        # g = (be|ck) as [b, e, c, k];  h = (mj|ck) as [m, j, c, k]
+        self.t2 = t2
+        self.g = g
+        self.h = h
+        self.g1 = numpy.ascontiguousarray(g.transpose(1, 3, 0, 2))     # [e, k, b, c] = (be|ck)
+        self.g3 = numpy.ascontiguousarray(g.transpose(1, 3, 2, 0))     # [e, j, b, c] = (ce|bj)
+        self.h2 = numpy.ascontiguousarray(h.transpose(0, 1, 3, 2))     # [m, j, k, c] = (mj|ck)
+        self.h4 = numpy.ascontiguousarray(h.transpose(1, 2, 3, 0))     # [k, b, j, m] = (mk|bj)
+        self.t8 = numpy.ascontiguousarray(t2.transpose(1, 0, 2, 3))    # [m, j, b, c] = t_jm^bc
+        self.t9 = numpy.ascontiguousarray(t2.transpose(3, 0, 1, 2))    # [e, k, i, c] = t_ki^ce
+        self.t12 = numpy.ascontiguousarray(t2.transpose(1, 0, 3, 2))   # [m, k, b, c] = t_km^cb
+
+    def for_a(self, a):
+        """Per-a slices (all small, O(o^2 v) or O(o v^2))."""
+        t2, g, h = self.t2, self.g, self.h
+        t2a = numpy.ascontiguousarray(t2[:, :, a, :])                 # [i, j, e]  t_ij^ae
+        t2xa = t2[:, :, :, a]                                          # [j, m, b]  t_jm^ba
+        gxa = g[:, :, a, :]                                            # [b, e, i]  (be|ai)
+        hxa = h[:, :, a, :]                                            # [m, k, i]  (mk|ai)
+        return dict(
+            t2a=t2a,
+            ta2=numpy.ascontiguousarray(t2a.transpose(0, 2, 1)),       # [i, b, m]  t_im^ab
+            ta4=numpy.ascontiguousarray(t2a.transpose(1, 0, 2)),       # [m, i, c]  t_im^ac
+            ta6=numpy.ascontiguousarray(t2xa.transpose(0, 2, 1)),      # [j, b, m]  t_jm^ba
+            ta10=numpy.ascontiguousarray(t2xa.transpose(1, 0, 2)),     # [m, k, c]  t_km^ca
+            ga5=numpy.ascontiguousarray(g[a].transpose(0, 2, 1)),      # [e, k, c]  (ae|ck)
+            ga7=numpy.ascontiguousarray(gxa.transpose(1, 2, 0)),       # [e, i, c]  (ce|ai)
+            ga9=numpy.ascontiguousarray(g[a].transpose(2, 1, 0)),      # [j, b, e]  (ae|bj)
+            ga11=numpy.ascontiguousarray(gxa.transpose(2, 0, 1)),      # [i, b, e]  (be|ai)
+            ha8=numpy.ascontiguousarray(hxa.transpose(1, 2, 0)),       # [k, i, m]  (mk|ai) (= [j, i, m] (mj|ai))
+        )
+
+
+def _w_block(t2, g, h, a, b0=None, b1=None, ops=None, opa=None, out=None):
+    """W_ijk^abc = P R for fixed a and b in [b0, b1), as [i, j, k, b, c].
+
+    The twelve terms of the six pair permutations of
+    R_ijk^abc = sum_e t_ij^ae (be|ck) - sum_m t_im^ab (mj|ck) are matrix
+    multiplications with pre-arranged operands; each result is accumulated
+    through a transposition that keeps the last axis (c) or the last two
+    axes (b, c) contiguous.
+    """
+    nocc, nvir = t2.shape[1], t2.shape[3]
+    if b0 is None:
+        b0, b1 = 0, nvir
+    nb = b1 - b0
+    if ops is None:
+        ops = _TriplesOperands(t2, g, h)
+    if opa is None:
+        opa = ops.for_a(a)
+    o, v = nocc, nvir
+    t2a, ta2, ta4, ta6, ta10 = (opa[k] for k in ('t2a', 'ta2', 'ta4', 'ta6', 'ta10'))
+    ga5, ga7, ga9, ga11, ha8 = (opa[k] for k in ('ga5', 'ga7', 'ga9', 'ga11', 'ha8'))
+    t2_b = numpy.ascontiguousarray(t2[:, :, b0:b1, :]).reshape(o * o * nb, v)   # rows (j, i, b) / (j, k, b)
+    dot = numpy.dot
+
+    # R_ijk^abc : + sum_e t_ij^ae (be|ck)            -> (i j | k b c)
+    w = dot(t2a.reshape(o * o, v), ops.g1[:, :, b0:b1, :].reshape(v, -1)).reshape(o, o, o, nb, v)
+    if out is not None:
+        out[:] = w
+        w = out
+    # R_ikj^acb : + sum_e t_ik^ae (ce|bj)            -> (i k | j b c)
+    r = dot(t2a.reshape(o * o, v), ops.g3[:, :, b0:b1, :].reshape(v, -1)).reshape(o, o, o, nb, v)
+    w += r.transpose(0, 2, 1, 3, 4)
+    # R_jik^bac : + sum_e t_ji^be (ae|ck)            -> (j i b | k c)
+    r = dot(t2_b, ga5.reshape(v, -1)).reshape(o, o, nb, o, v)
+    w += r.transpose(1, 0, 3, 2, 4)
+    # R_jki^bca : + sum_e t_jk^be (ce|ai)            -> (j k b | i c)
+    r = dot(t2_b, ga7.reshape(v, -1)).reshape(o, o, nb, o, v)
+    w += r.transpose(3, 0, 1, 2, 4)
+    # R_kij^cab : + sum_e t_ki^ce (ae|bj)            -> (j b | k i c)
+    r = dot(ga9[:, b0:b1, :].reshape(o * nb, v), ops.t9.reshape(v, -1)).reshape(o, nb, o, o, v)
+    w += r.transpose(3, 0, 2, 1, 4)
+    # R_kji^cba : + sum_e t_kj^ce (be|ai)            -> (i b | k j c)
+    r = dot(ga11[:, b0:b1, :].reshape(o * nb, v), ops.t9.reshape(v, -1)).reshape(o, nb, o, o, v)
+    w += r.transpose(0, 3, 2, 1, 4)
+    # R_ijk^abc : - sum_m t_im^ab (mj|ck)            -> (i b | j k c)
+    r = dot(ta2[:, b0:b1, :].reshape(o * nb, o), ops.h2.reshape(o, -1)).reshape(o, nb, o, o, v)
+    w -= r.transpose(0, 2, 3, 1, 4)
+    # R_ikj^acb : - sum_m t_im^ac (mk|bj)            -> (k b j | i c)
+    r = dot(ops.h4[:, b0:b1].reshape(o * nb * o, o), ta4.reshape(o, -1)).reshape(o, nb, o, o, v)
+    w -= r.transpose(3, 2, 0, 1, 4)
+    # R_jik^bac : - sum_m t_jm^ba (mi|ck)            -> (j b | i k c)
+    r = dot(ta6[:, b0:b1, :].reshape(o * nb, o), ops.h2.reshape(o, -1)).reshape(o, nb, o, o, v)
+    w -= r.transpose(2, 0, 3, 1, 4)
+    # R_jki^bca : - sum_m t_jm^bc (mk|ai)            -> (k i | j b c)
+    t8_b = numpy.ascontiguousarray(ops.t8[:, :, b0:b1, :]).reshape(o, -1)
+    r = dot(ha8.reshape(o * o, o), t8_b).reshape(o, o, o, nb, v)
+    w -= r.transpose(1, 2, 0, 3, 4)
+    # R_kij^cab : - sum_m t_km^ca (mi|bj)            -> (i b j | k c)
+    r = dot(ops.h4[:, b0:b1].reshape(o * nb * o, o), ta10.reshape(o, -1)).reshape(o, nb, o, o, v)
+    w -= r.transpose(0, 2, 3, 1, 4)
+    # R_kji^cba : - sum_m t_km^cb (mj|ai)            -> (j i | k b c)
+    t12_b = numpy.ascontiguousarray(ops.t12[:, :, b0:b1, :]).reshape(o, -1)
+    r = dot(ha8.reshape(o * o, o), t12_b).reshape(o, o, o, nb, v)
+    w -= r.transpose(1, 0, 2, 3, 4)
     return w
 
 
 def triples_by_atom(mycc, x=None, t1=None, t2=None, mo_energy=None, verbose=None,
-                    max_memory=None):
+                    max_memory=None, with_t4=True):
     """Atomic partitions of the (T) correction.
+
+    Parameters
+    ----------
+    with_t4 : bool
+        Also split every atomic (T) energy into E_T[4]^A and E_ST[5]^A
+        (default True; costs about 40 % more).
 
     Returns
     -------
     dict with keys 'occ' and 'vir' (U^{0,0} and U^{2,2} partitions); each
     value is a tuple (e_t, e_t4) of arrays (natm,) with the total (T)
-    correction and its fourth-order part per atom.
+    correction and its fourth-order part (None if ``with_t4`` is False).
     """
     log = logger.new_logger(mycc, verbose)
     mol = mycc.mol
@@ -168,7 +268,7 @@ def triples_by_atom(mycc, x=None, t1=None, t2=None, mo_energy=None, verbose=None
     if t1 is None or t2 is None:
         raise RuntimeError('CCSD amplitudes are not available; run the CCSD first')
     t1 = numpy.asarray(t1)
-    t2 = numpy.asarray(t2)
+    t2 = numpy.ascontiguousarray(t2)
     c_occ, c_vir = corr.active_orbitals(mycc)
     nocc = c_occ.shape[1]
     nvir = c_vir.shape[1]
@@ -189,66 +289,88 @@ def triples_by_atom(mycc, x=None, t1=None, t2=None, mo_energy=None, verbose=None
     ovov = transform((c_occ, c_vir, c_occ, c_vir)).reshape(nocc, nvir, nocc, nvir)
     g_tot = transform((c_vir, c_vir, c_vir, c_occ)).reshape(nvir, nvir, nvir, nocc)   # (be|ck)
     h_tot = transform((c_occ, c_occ, c_vir, c_occ)).reshape(nocc, nocc, nvir, nocc)   # (mj|ck)
+    ops = _TriplesOperands(t2, g_tot, h_tot)
+    ov_kc = numpy.ascontiguousarray(ovov.transpose(0, 2, 1, 3))         # [j, k, b, c] = (jb|kc)
 
-    # --- atom-independent part: P_beck and Q_mjck for Y4 = 2 r3(W)/D and Y5 = 2 r3(Z)/D
+    # --- atom-independent part: P_beck and Q_mjck for Y = 2 r3(W + Z)/D (and 2 r3(W)/D)
     eijk = lib.direct_sum('i+j+k->ijk', e_occ, e_occ, e_occ)
     ebc = lib.direct_sum('b+c->bc', e_vir, e_vir)
-    p4 = numpy.zeros((nvir, nvir, nvir, nocc))        # [b, e, c, k]
-    p5 = numpy.zeros((nvir, nvir, nvir, nocc))
-    q4 = numpy.zeros((nocc, nocc, nvir, nocc))        # [m, j, c, k]
-    q5 = numpy.zeros((nocc, nocc, nvir, nocc))
+    keys = ('t', '4') if with_t4 else ('t',)
+    p = {k: numpy.zeros((nvir, nvir, nvir, nocc)) for k in keys}      # [b, e, c, k]
+    q = {k: numpy.zeros((nocc, nocc, nvir, nocc)) for k in keys}      # [m, j, c, k]
+    mem_per_b = nocc ** 3 * nvir * 8 / 1e6 * (7 if with_t4 else 5)   # W, Y, D, transposed copies
+    avail = max_memory - lib.current_memory()[0]
+    nb_max = int(max(1, min(nvir, avail // max(mem_per_b, 1e-6))))
+    log.debug('(T) partition: %d virtual orbitals b per block (%.0f MB)', nb_max, nb_max * mem_per_b)
+    t2_oo = t2.reshape(nocc * nocc, nvir * nvir)
     for a in range(nvir):
-        d3 = lib.direct_sum('ijk-bc->ijkbc', eijk, ebc + e_vir[a])
-        w = _w_block(t2, g_tot, h_tot, a)
-        z = (numpy.einsum('i,jbkc->ijkbc', t1[:, a], ovov)
-             + numpy.einsum('jb,ikc->ijkbc', t1, ovov[:, a])
-             + numpy.einsum('kc,ijb->ijkbc', t1, ovov[:, a]))
-        t2a = t2[:, :, a, :]                                          # [i, j, e]  (= t_ij^ae)
-        t2a_ib = numpy.ascontiguousarray(t2a.transpose(0, 2, 1))      # [i, b, m]  (= t_im^ab)
-        for y, p, q in ((2.0 * _r3(w) / d3, p4, q4), (2.0 * _r3(z) / d3, p5, q5)):
-            # P_beck += sum_ij Y_ijkbc t_ij^ae
-            pe = t2a.reshape(nocc * nocc, nvir).T.dot(y.reshape(nocc * nocc, -1))   # [e, (k b c)]
-            p += pe.reshape(nvir, nocc, nvir, nvir).transpose(2, 0, 3, 1)           # -> [b, e, c, k]
-            # Q_mjck += sum_ib Y_ijkbc t_im^ab
-            y_ib = numpy.ascontiguousarray(y.transpose(1, 2, 4, 0, 3))              # [j, k, c, i, b]
-            qm = y_ib.reshape(-1, nocc * nvir).dot(t2a_ib.reshape(nocc * nvir, nocc))  # [(j k c), m]
-            q += qm.reshape(nocc, nocc, nvir, nocc).transpose(3, 0, 2, 1)           # -> [m, j, c, k]
+        opa = ops.for_a(a)
+        t2a_t = opa['t2a'].reshape(nocc * nocc, nvir).T                # [e, (i j)]
+        t1a = t1[:, a]
+        for b0, b1 in lib.prange(0, nvir, nb_max):
+            nb = b1 - b0
+            w = _w_block(t2, g_tot, h_tot, a, b0, b1, ops, opa)          # [i, j, k, b, c]
+            z = t1a[:, None, None, None, None] * ov_kc[None, :, :, b0:b1, :]
+            z += t1[None, :, None, b0:b1, None] * ovov[:, a][:, None, :, None, :]
+            z += t1[None, None, :, None, :] * ovov[:, a, :, b0:b1][:, :, None, :, None]
+            inv_d = lib.direct_sum('ijk-bc->ijkbc', eijk, ebc[b0:b1] + e_vir[a])
+            numpy.reciprocal(inv_d, out=inv_d)
+            inv_d *= 2.0
+            blocks = []
+            if with_t4:
+                y4 = _r3(w)
+                y4 *= inv_d
+                blocks.append(('4', y4))
+            w += z
+            y = _r3(w, out=z)
+            y *= inv_d
+            blocks.append(('t', y))
+            w = inv_d = None
+            for key, yb in blocks:
+                # P_beck += sum_ij Y_ijkbc t_ij^ae                         -> [e, (k b c)]
+                pe = t2a_t.dot(yb.reshape(nocc * nocc, -1)).reshape(nvir, nocc, nb, nvir)
+                p[key][b0:b1] += pe.transpose(2, 0, 3, 1)
+                # Q_mjck += sum_ib Y_ijkbc t_im^ab                          -> [(j k c), m]
+                y_ib = numpy.ascontiguousarray(yb.transpose(1, 2, 4, 0, 3)).reshape(-1, nocc * nb)
+                qm = y_ib.dot(opa['ta2'][:, b0:b1, :].reshape(nocc * nb, nocc))
+                q[key] += qm.reshape(nocc, nocc, nvir, nocc).transpose(3, 0, 2, 1)
+            blocks = y = y4 = z = y_ib = None
         log.debug1('(T) partition: virtual block %d/%d done', a + 1, nvir)
-    w = z = y = y_ib = d3 = None
+    ops = None
 
     # --- contractions with the integrals carrying the one-centre index l
-    def blocks(n, per_unit_mb):
+    def blocks_of(n, per_unit_mb):
         avail = max_memory - lib.current_memory()[0]
         blk = int(max(1, min(n, avail // max(per_unit_mb * 1.5, 1e-6))))
         return lib.prange(0, n, blk)
 
-    pg = {name: numpy.zeros((nocc, nao)) for name in ('4', '5')}     # occ: [k, l]
-    qh = {name: numpy.zeros((nocc, nao)) for name in ('4', '5')}
-    pgv = {name: numpy.zeros((nvir, nao)) for name in ('4', '5')}    # vir: [c, l]
-    qhv = {name: numpy.zeros((nvir, nao)) for name in ('4', '5')}
+    pg = {k: numpy.zeros((nocc, nao)) for k in keys}      # occ: [k, l]
+    qh = {k: numpy.zeros((nocc, nao)) for k in keys}
+    pgv = {k: numpy.zeros((nvir, nao)) for k in keys}     # vir: [c, l]
+    qhv = {k: numpy.zeros((nvir, nao)) for k in keys}
     mb_b = nvir * nvir * nao * 8 / 1e6
-    for b0, b1 in blocks(nvir, 2 * mb_b):
+    for b0, b1 in blocks_of(nvir, 2 * mb_b):
         nb = b1 - b0
         g = transform((c_vir[:, b0:b1], c_vir, c_vir, x)).reshape(nb, nvir, nvir, nao)   # (be|cl)
-        for name, p in (('4', p4), ('5', p5)):
-            pg[name] += p[b0:b1].reshape(-1, nocc).T.dot(g.reshape(-1, nao))
+        for k in keys:
+            pg[k] += p[k][b0:b1].reshape(-1, nocc).T.dot(g.reshape(-1, nao))
         g = transform((c_vir[:, b0:b1], c_vir, x, c_occ)).reshape(nb, nvir, nao, nocc)   # (be|lk)
         g = numpy.ascontiguousarray(g.transpose(0, 1, 3, 2)).reshape(-1, nao)            # [(b e k), l]
-        for name, p in (('4', p4), ('5', p5)):
-            pb = numpy.ascontiguousarray(p[b0:b1].transpose(2, 0, 1, 3)).reshape(nvir, -1)  # [c, (b e k)]
-            pgv[name] += pb.dot(g)
+        for k in keys:
+            pb = numpy.ascontiguousarray(p[k][b0:b1].transpose(2, 0, 1, 3)).reshape(nvir, -1)  # [c, (b e k)]
+            pgv[k] += pb.dot(g)
         g = pb = None
     mb_m = nocc * nvir * nao * 8 / 1e6
-    for m0, m1 in blocks(nocc, 2 * mb_m):
+    for m0, m1 in blocks_of(nocc, 2 * mb_m):
         nm = m1 - m0
         h = transform((c_occ[:, m0:m1], c_occ, c_vir, x)).reshape(nm, nocc, nvir, nao)   # (mj|cl)
-        for name, q in (('4', q4), ('5', q5)):
-            qh[name] += q[m0:m1].reshape(-1, nocc).T.dot(h.reshape(-1, nao))
+        for k in keys:
+            qh[k] += q[k][m0:m1].reshape(-1, nocc).T.dot(h.reshape(-1, nao))
         h = transform((c_occ[:, m0:m1], c_occ, x, c_occ)).reshape(nm, nocc, nao, nocc)   # (mj|lk)
         h = numpy.ascontiguousarray(h.transpose(0, 1, 3, 2)).reshape(-1, nao)            # [(m j k), l]
-        for name, q in (('4', q4), ('5', q5)):
-            qm = numpy.ascontiguousarray(q[m0:m1].transpose(2, 0, 1, 3)).reshape(nvir, -1)  # [c, (m j k)]
-            qhv[name] += qm.dot(h)
+        for k in keys:
+            qm = numpy.ascontiguousarray(q[k][m0:m1].transpose(2, 0, 1, 3)).reshape(nvir, -1)  # [c, (m j k)]
+            qhv[k] += qm.dot(h)
         h = qm = None
 
     aoslice = mol.aoslice_by_atom()
@@ -258,10 +380,13 @@ def triples_by_atom(mycc, x=None, t1=None, t2=None, mo_energy=None, verbose=None
 
     result = {}
     for name, coeff, pp, qq in (('occ', cp_occ, pg, qh), ('vir', cp_vir, pgv, qhv)):
-        e4 = by_atom(numpy.einsum('lk,kl->l', coeff, pp['4'] - qq['4']))
-        e5 = by_atom(numpy.einsum('lk,kl->l', coeff, pp['5'] - qq['5']))
-        result[name] = (e4 + e5, e4)
-        log.debug('(T) partition %s: E_T[4] = %s  E_ST[5] = %s', name, e4, e5)
+        e_t = by_atom(numpy.einsum('lk,kl->l', coeff, pp['t'] - qq['t']))
+        e4 = by_atom(numpy.einsum('lk,kl->l', coeff, pp['4'] - qq['4'])) if with_t4 else None
+        result[name] = (e_t, e4)
+        if with_t4:
+            log.debug('(T) partition %s: E_T[4] = %s  E_ST[5] = %s', name, e4, e_t - e4)
+        else:
+            log.debug('(T) partition %s: E_(T) = %s', name, e_t)
     return result
 
 
@@ -271,6 +396,8 @@ class EDA(eda_ccsd.EDA):
     Parameters are those of ``pyscf_eda.ccsd.EDA``; ``w_occ`` weights the
     occupied-side partitions (CCSD: occupied orbital i; (T): U^{0,0}) against
     the virtual-side ones (CCSD: virtual orbital a; (T): U^{2,2}).
+    ``with_t4`` (default True) also resolves E_(T)^A into E_T[4]^A and
+    E_ST[5]^A; ``with_t4=False`` saves about 40 % of the partition time.
 
     Examples
     --------
@@ -283,10 +410,17 @@ class EDA(eda_ccsd.EDA):
 
     result_class = CCSDTEDAResult
 
+    def __init__(self, mycc, ne_partition='half', orbital_basis='nao', w_occ=1.0,
+                 with_singles=False, with_t4=True):
+        eda_ccsd.EDA.__init__(self, mycc, ne_partition=ne_partition, orbital_basis=orbital_basis,
+                              w_occ=w_occ, with_singles=with_singles)
+        self.with_t4 = with_t4
+
     def _corr_partition(self):
         ccsd_occ, ccsd_vir = eda_ccsd.corr_energy_by_atom(
             self._cc, x=self.orth_coeff, with_singles=self.with_singles, verbose=self.verbose)
-        parts = triples_by_atom(self._cc, x=self.orth_coeff, verbose=self.verbose)
+        parts = triples_by_atom(self._cc, x=self.orth_coeff, verbose=self.verbose,
+                                with_t4=self.with_t4)
         self._parts = (ccsd_occ, ccsd_vir, parts)
         return ccsd_occ + parts['occ'][0], ccsd_vir + parts['vir'][0]
 

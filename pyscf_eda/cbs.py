@@ -542,7 +542,7 @@ class CompositeEDA(lib.StreamObject):
                     if top == 'CCSD(T)':
                         self.grads[('CCSD(T)', x)] = eda_grad.ccsd_t_gradient(mycc, verbose=gverb)
                 if top == 'CCSD(T)':
-                    res = eda_ccsd_t.EDA(mycc, w_occ=self.w_occ, **eda_kw)
+                    res = eda_ccsd_t.EDA(mycc, w_occ=self.w_occ, with_t4=False, **eda_kw)
                     res.verbose = 0
                     res = res.kernel()
                     corr[('CCSD', x)] = res.e_ccsd
