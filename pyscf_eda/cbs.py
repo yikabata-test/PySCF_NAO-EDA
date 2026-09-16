@@ -123,6 +123,7 @@ def chemical_core(mol):
 
 HF_CBS_METHODS = ('largest', 'karton-martin', 'halkier')
 HALKIER_ALPHA = 1.63
+SUM_RULE_TOL = 1e-8      # tolerance of the atomic sum rules (hartree)
 
 
 def hf_cbs_coefficients(method, cardinals, alpha=HALKIER_ALPHA):
@@ -254,6 +255,7 @@ class CBSEDAResult:
     hf_coeff    : dict {X: coefficient of the HF CBS estimate}
     e_corr_mol  : molecular CBS correlation energy (equals e_corr.sum())
     e_tot_mol   : molecular CBS total energy
+    sum_errors  : {(method, X): sum of atomic energies - PySCF's energy} per level
     e_tot_by_hf, e_tot_mol_by_hf : {hf method: CBS total energies} for every
                   available HF/CBS scheme (atomic arrays / molecular values)
     grad_by_hf  : {hf method: CBS gradient} when computed with gradients
@@ -264,8 +266,10 @@ class CBSEDAResult:
 
     def __init__(self, mol, scheme, basis_family, coeff, hf_cbs, corr, hf,
                  corr_mol, hf_mol, eda_results, orbital_basis, ne_partition, w_occ, frozen,
-                 hf_alpha=HALKIER_ALPHA, grads=None, hf_grads=None):
+                 hf_alpha=HALKIER_ALPHA, grads=None, hf_grads=None, sum_errors=None):
         self.mol = mol
+        # {(method, X): sum of the atomic energies of that level - PySCF's value}
+        self.sum_errors = dict(sum_errors or {})
         self.grads = grads          # {(method, X): total-energy gradient (natm, 3)}
         self.hf_grads = hf_grads    # {X: HF gradient}
         self.grad = self.grad_hf = self.grad_corr = None
@@ -343,6 +347,14 @@ class CBSEDAResult:
         lines.append(row('E_HF (ref)', self.e_hf))
         lines.append(row('E_corr (CBS)', self.e_corr))
         lines.append(row(f'E_{self.scheme} (CBS)', self.e_tot))
+        if self.sum_errors:
+            lines.append('-' * len(header))
+            lines.append('Sum-rule check: sum_A E^A(level) - E(level, PySCF)  [hartree; '
+                         f'flagged if |diff| > {SUM_RULE_TOL:.0e}]')
+            for key in sorted(self.sum_errors, key=lambda k: (CARDINAL[k[1]], METHOD_LEVEL.get(k[0], -1))):
+                d = self.sum_errors[key]
+                flag = '   <-- exceeds tolerance' if abs(d) > SUM_RULE_TOL else ''
+                lines.append(f"  {key[0]}[{key[1]}Z]".ljust(20) + f"{d:>15.3e}{flag}")
         lines.append('-' * len(header))
         lines.append(f"Molecular HF/CBS energy         : {self.e_hf_mol:20.10f}"
                      f"   (sum of atoms - mol = {self.hf_sum_error:.3e})")
@@ -493,6 +505,16 @@ class CompositeEDA(lib.StreamObject):
                  ', '.join(f'{m}/{x}Z' for x, m in sorted(plan.items(), key=lambda t: CARDINAL[t[0]])))
         eda_kw = dict(ne_partition=self.ne_partition, orbital_basis=self.orbital_basis)
         corr, hf, corr_mol, hf_mol = {}, {}, {}, {}
+        self.sum_errors = {}
+
+        def check_sum(method, x, e_atoms, e_ref):
+            diff = float(numpy.sum(e_atoms) - e_ref)
+            self.sum_errors[(method, x)] = diff
+            if abs(diff) > SUM_RULE_TOL:
+                log.warn('Sum of the atomic %s[%sZ] energies (%.10f) differs from the PySCF '
+                         'value (%.10f) by %.3e', method, x, numpy.sum(e_atoms), e_ref, diff)
+            else:
+                log.info('sum rule %s[%sZ]: |sum_A - PySCF| = %.1e', method, x, abs(diff))
         if self.with_grad:
             from pyscf_eda import grad as eda_grad
         gverb = max(self.verbose - 2, 0)
@@ -512,6 +534,7 @@ class CompositeEDA(lib.StreamObject):
             hf[x] = hf_res.e_tot
             hf_mol[x] = mf.e_tot
             self.eda_results[('HF', x)] = hf_res
+            check_sum('HF', x, hf_res.e_tot, mf.e_tot)
             if self.with_grad:
                 self.hf_grads[x] = eda_grad.hf_gradient(mf, verbose=gverb)
 
@@ -527,6 +550,7 @@ class CompositeEDA(lib.StreamObject):
             corr[('MP2', x)] = res.e_corr
             corr_mol[('MP2', x)] = pt.e_corr
             self.eda_results[('MP2', x)] = res
+            check_sum('MP2', x, res.e_corr, pt.e_corr)
 
             if METHOD_LEVEL[top] >= 1:
                 mycc = pyscf_cc.CCSD(mf, frozen=frozen)
@@ -542,15 +566,18 @@ class CompositeEDA(lib.StreamObject):
                     if top == 'CCSD(T)':
                         self.grads[('CCSD(T)', x)] = eda_grad.ccsd_t_gradient(mycc, verbose=gverb)
                 if top == 'CCSD(T)':
-                    res = eda_ccsd_t.EDA(mycc, w_occ=self.w_occ, with_t4=False, **eda_kw)
-                    res.verbose = 0
-                    res = res.kernel()
+                    eda_t = eda_ccsd_t.EDA(mycc, w_occ=self.w_occ, with_t4=False, **eda_kw)
+                    eda_t.verbose = 0
+                    res = eda_t.kernel()
+                    e_t_pyscf = eda_t.e_t                  # PySCF's ccsd_t() for the molecule
                     corr[('CCSD', x)] = res.e_ccsd
                     corr_mol[('CCSD', x)] = mycc.e_corr
                     corr[('CCSD(T)', x)] = res.e_corr
-                    corr_mol[('CCSD(T)', x)] = mycc.e_corr + res.e_t.sum()
+                    corr_mol[('CCSD(T)', x)] = mycc.e_corr + e_t_pyscf
                     self.eda_results[('CCSD', x)] = res
                     self.eda_results[('CCSD(T)', x)] = res
+                    check_sum('CCSD', x, res.e_ccsd, mycc.e_corr)
+                    check_sum('CCSD(T)', x, res.e_corr, mycc.e_corr + e_t_pyscf)
                 else:
                     res = eda_ccsd.EDA(mycc, w_occ=self.w_occ, **eda_kw)
                     res.verbose = 0
@@ -558,6 +585,7 @@ class CompositeEDA(lib.StreamObject):
                     corr[('CCSD', x)] = res.e_corr
                     corr_mol[('CCSD', x)] = mycc.e_corr
                     self.eda_results[('CCSD', x)] = res
+                    check_sum('CCSD', x, res.e_corr, mycc.e_corr)
             log.info('basis %s done: E_HF = %.10f, ' % (x, mf.e_tot) + ', '.join(
                 f'E_corr({m}) = {corr_mol[(m, x)]:.10f}' for m in METHOD_LEVEL if (m, x) in corr_mol))
 
@@ -566,11 +594,16 @@ class CompositeEDA(lib.StreamObject):
                                    self.orbital_basis, self.ne_partition, self.w_occ, self.frozen,
                                    hf_alpha=self.hf_alpha,
                                    grads=self.grads if self.with_grad else None,
-                                   hf_grads=self.hf_grads if self.with_grad else None)
+                                   hf_grads=self.hf_grads if self.with_grad else None,
+                                   sum_errors=self.sum_errors)
         diff = self.result.e_tot.sum() - self.result.e_tot_mol
-        if abs(diff) > 1e-7:
+        if abs(diff) > SUM_RULE_TOL:
             log.warn('Sum of atomic CBS energies differs from the molecular value by %.3e',
                      diff)
+        bad = {k: d for k, d in self.sum_errors.items() if abs(d) > SUM_RULE_TOL}
+        if bad:
+            log.warn('Atomic sum rules violated at %s (see result.sum_errors)',
+                     ', '.join(f'{k[0]}[{k[1]}Z]: {d:.2e}' for k, d in bad.items()))
         if self.verbose >= logger.INFO:
             log.info('\n%s', self.result.summary())
         return self.result
@@ -672,7 +705,10 @@ class HFCBS(lib.StreamObject):
             hf[x] = res.e_tot
             hf_mol[x] = mf.e_tot
             eda_results[x] = res
-            log.info('basis %s (%s): E_HF = %.10f', x, self.basis_sets[x], mf.e_tot)
+            diff = res.e_tot.sum() - mf.e_tot
+            if abs(diff) > SUM_RULE_TOL:
+                log.warn('Sum of the atomic HF[%sZ] energies differs from E(SCF) by %.3e', x, diff)
+            log.info('basis %s (%s): E_HF = %.10f (sum rule %.1e)', x, self.basis_sets[x], mf.e_tot, diff)
         self.result = HFCBSResult(self.mol, self.basis_sets, hf, hf_mol, eda_results,
                                   self.orbital_basis, self.alpha)
         if self.verbose >= logger.INFO:

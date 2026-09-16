@@ -315,3 +315,17 @@ def test_gradients_for_every_hf_scheme(h2_qtd_grad):
         expect = sum(c * res.hf_grads[x] for x, c in
                      eda_cbs.hf_cbs_coefficients(m, list(res.hf)).items()) + res.grad_corr
         assert numpy.allclose(res.grad_by_hf[m], expect)
+
+
+def test_sum_rules_recorded_per_level(qtd_result):
+    res = qtd_result
+    assert set(res.sum_errors) == {('HF', 'D'), ('HF', 'T'), ('HF', 'Q'), ('MP2', 'D'), ('MP2', 'T'),
+                                   ('MP2', 'Q'), ('CCSD', 'D'), ('CCSD', 'T'), ('CCSD(T)', 'D')}
+    for key, d in res.sum_errors.items():
+        assert abs(d) < eda_cbs.SUM_RULE_TOL, key
+    assert 'Sum-rule check' in res.summary() and 'exceeds tolerance' not in res.summary()
+    # the molecular (T) reference is PySCF's ccsd_t(), not the atomic sum
+    mycc = res.eda_results[('CCSD(T)', 'D')]
+    e_t_pyscf = res.corr_mol[('CCSD(T)', 'D')] - res.corr_mol[('CCSD', 'D')]
+    e_t_from_sums = mycc.e_t.sum() - (res.sum_errors[('CCSD(T)', 'D')] - res.sum_errors[('CCSD', 'D')])
+    assert abs(e_t_pyscf - e_t_from_sums) < 1e-12

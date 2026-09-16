@@ -459,6 +459,17 @@ print(hfres.summary())          # 全方式の原子 HF/CBS，原子和 − 分�
 print(hfres.estimates['halkier']['atoms'])
 ```
 
+### 和則の検査
+
+各レベルの原子エネルギーの和は PySCF が計算した分子のエネルギー (HF: `mf.e_tot`，MP2/CCSD:
+`e_corr`，(T): `ccsd_t()`) と一致しなければなりません。個別の EDA (`rhf.EDA`, `mp2.EDA`,
+`ccsd.EDA`, `ccsd_t.EDA`) は `kernel()` でこれを検査し，ずれが `tol_energy` (1e-8 hartree) を
+超えると警告を出します。`CompositeEDA` / `HFCBS` は各基底・各レベルで同じ検査を行い，
+ずれを `res.sum_errors[(手法, 基底)]` に記録して `summary()` の「Sum-rule check」に表示し，
+1e-8 hartree を超えたレベルがあれば警告を出します。原子分割には PySCF の振幅 (MP2: t2，
+CCSD/(T): t1, t2) と MO 係数・軌道エネルギーを使い，積分は PySCF の `ao2mo` で変換し直します。
+PySCF のエネルギー値そのものは分割には使わず，この検査の基準としてのみ用います。
+
 ### 収束判定と勾配の精度
 
 解析勾配の誤差は SCF の軌道勾配の残差の 1 次 (エネルギーの誤差は 2 次) なので，
