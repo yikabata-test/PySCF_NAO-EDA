@@ -432,39 +432,41 @@ def triples_by_atom(mycc, x=None, t1=None, t2=None, mo_energy=None, verbose=None
                                        max_memory, log)
 
     # --- contractions with the integrals carrying the one-centre index l
-    def blocks_of(n, per_unit_mb):
+    def block_size(n, per_unit_mb):
         avail = max_memory - lib.current_memory()[0]
-        blk = int(max(1, min(n, avail // max(per_unit_mb * 1.5, 1e-6))))
-        return lib.prange(0, n, blk)
+        return int(max(1, min(n, avail // max(per_unit_mb * 1.5, 1e-6))))
 
     pg = {k: numpy.zeros((nocc, nao)) for k in keys}      # occ: [k, l]
     qh = {k: numpy.zeros((nocc, nao)) for k in keys}
     pgv = {k: numpy.zeros((nvir, nao)) for k in keys}     # vir: [c, l]
     qhv = {k: numpy.zeros((nvir, nao)) for k in keys}
     mb_b = nvir * nvir * nao * 8 / 1e6
-    for b0, b1 in blocks_of(nvir, 2 * mb_b):
-        nb = b1 - b0
-        g = transform((c_vir[:, b0:b1], c_vir, c_vir, x)).reshape(nb, nvir, nvir, nao)   # (be|cl)
+    blk_b = block_size(nvir, 2 * mb_b)
+    rows = corr.transform_by_rows
+    for b0, b1, g in rows(transform, (c_vir, c_vir, c_vir, x), blk_b, max_memory):     # (be|cl)
         for k in keys:
             pg[k] += p[k][b0:b1].reshape(-1, nocc).T.dot(g.reshape(-1, nao))
-        g = transform((c_vir[:, b0:b1], c_vir, x, c_occ)).reshape(nb, nvir, nao, nocc)   # (be|lk)
-        g = numpy.ascontiguousarray(g.transpose(0, 1, 3, 2)).reshape(-1, nao)            # [(b e k), l]
+    g = None
+    for b0, b1, g in rows(transform, (c_vir, c_vir, x, c_occ), blk_b, max_memory):     # (be|lk)
+        nb = b1 - b0
+        g = numpy.ascontiguousarray(g.reshape(nb, nvir, nao, nocc).transpose(0, 1, 3, 2)).reshape(-1, nao)
         for k in keys:
             pb = numpy.ascontiguousarray(p[k][b0:b1].transpose(2, 0, 1, 3)).reshape(nvir, -1)  # [c, (b e k)]
             pgv[k] += pb.dot(g)
-        g = pb = None
+    g = pb = None
     mb_m = nocc * nvir * nao * 8 / 1e6
-    for m0, m1 in blocks_of(nocc, 2 * mb_m):
-        nm = m1 - m0
-        h = transform((c_occ[:, m0:m1], c_occ, c_vir, x)).reshape(nm, nocc, nvir, nao)   # (mj|cl)
+    blk_m = block_size(nocc, 2 * mb_m)
+    for m0, m1, h in rows(transform, (c_occ, c_occ, c_vir, x), blk_m, max_memory):     # (mj|cl)
         for k in keys:
             qh[k] += q[k][m0:m1].reshape(-1, nocc).T.dot(h.reshape(-1, nao))
-        h = transform((c_occ[:, m0:m1], c_occ, x, c_occ)).reshape(nm, nocc, nao, nocc)   # (mj|lk)
-        h = numpy.ascontiguousarray(h.transpose(0, 1, 3, 2)).reshape(-1, nao)            # [(m j k), l]
+    h = None
+    for m0, m1, h in rows(transform, (c_occ, c_occ, x, c_occ), blk_m, max_memory):     # (mj|lk)
+        nm = m1 - m0
+        h = numpy.ascontiguousarray(h.reshape(nm, nocc, nao, nocc).transpose(0, 1, 3, 2)).reshape(-1, nao)
         for k in keys:
             qm = numpy.ascontiguousarray(q[k][m0:m1].transpose(2, 0, 1, 3)).reshape(nvir, -1)  # [c, (m j k)]
             qhv[k] += qm.dot(h)
-        h = qm = None
+    h = qm = None
 
     aoslice = mol.aoslice_by_atom()
 

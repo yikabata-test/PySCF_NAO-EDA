@@ -52,7 +52,36 @@ def eri_transformer(obj):
 
         def transform(coeffs):
             return ao2mo.general(mol, coeffs, compact=False)
+        transform.outcore = True        # AO integrals are regenerated on every call
+        transform.mol = mol
     return transform
+
+
+def transform_by_rows(transform, coeffs, blk, max_memory=None, verbose=None):
+    """Yield (i0, i1, (12|34)[i0*n2:i1*n2]) over blocks of the first orbital set.
+
+    For in-core or density-fitted integrals the blocks are transformed one
+    by one.  For an out-of-core transformation (``transform.outcore``) the
+    AO integrals would be regenerated for every block, so the full
+    transformation is done once into a temporary HDF5 file and the blocks
+    are read back from disk.
+    """
+    c1, c2, c3, c4 = coeffs
+    n1, n2 = c1.shape[1], c2.shape[1]
+    if getattr(transform, 'outcore', False):
+        mol = transform.mol
+        if max_memory is None:
+            max_memory = mol.max_memory
+        with lib.H5TmpFile() as feri:
+            ao2mo.outcore.general(mol, coeffs, feri, dataname='eri', compact=False,
+                                  max_memory=max(max_memory - lib.current_memory()[0], 500),
+                                  verbose=0)
+            dset = feri['eri']
+            for i0, i1 in lib.prange(0, n1, blk):
+                yield i0, i1, numpy.asarray(dset[i0 * n2:i1 * n2])
+    else:
+        for i0, i1 in lib.prange(0, n1, blk):
+            yield i0, i1, transform((c1[:, i0:i1], c2, c3, c4))
 
 
 def active_orbitals(obj):
@@ -121,9 +150,9 @@ def partition_doubles(mol, transform, c_occ, c_vir, tau, x=None, verbose=None,
 
     y = numpy.zeros((nao, nocc))      # Y_li = sum_{ajb} (la|jb) tbar_ijab
     z = numpy.zeros((nao, nvir))      # Z_la = sum_{ijb} (il|jb) tbar_ijab
-    for j0, j1 in lib.prange(0, nocc, blk):
+    for j0, j1, eri in transform_by_rows(transform, (c_occ, c_vir, x, c_act), blk, max_memory):
         nj = j1 - j0
-        eri = transform((c_occ[:, j0:j1], c_vir, x, c_act)).reshape(nj, nvir, nao, nmo)
+        eri = eri.reshape(nj, nvir, nao, nmo)
         for j in range(nj):
             t_j = tbar[:, j0 + j]                                            # [i, a, b]
             e_la = numpy.ascontiguousarray(eri[j, :, :, nocc:].transpose(1, 2, 0))  # [l, a, b]

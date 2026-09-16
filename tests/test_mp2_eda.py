@@ -207,3 +207,28 @@ def test_partition_doubles_matches_per_atom_reference():
             assert numpy.allclose(e_occ, ref_occ, atol=1e-12)
             assert numpy.allclose(e_vir, ref_vir, atol=1e-12)
             assert abs(e_occ.sum() - pt.e_corr) < 1e-10 and abs(e_vir.sum() - pt.e_corr) < 1e-10
+
+
+def test_outcore_transformation_matches_incore():
+    """Out-of-core path (single HDF5 transformation, blocks read back) == in-core path."""
+    from pyscf import lib
+    from pyscf_eda import corr, ccsd_t as eda_ccsd_t
+    from pyscf import cc
+    mol = gto.M(atom='O 0 0 0; H 0 0.757 0.586; H 0 -0.757 0.586', basis='cc-pvdz', verbose=0)
+    mf = scf.RHF(mol).run(conv_tol=1e-11)
+    pt = mp.MP2(mf, frozen=1).run()
+    ref = eda_mp2.EDA(pt).kernel()
+    mycc = cc.CCSD(mf, frozen=1); mycc.conv_tol = 1e-10; mycc.conv_tol_normt = 1e-8; mycc.run()
+    ref_t = eda_ccsd_t.triples_by_atom(mycc)
+    mf._eri = None                     # force the out-of-core transformation
+    tr = corr.eri_transformer(pt)
+    assert getattr(tr, 'outcore', False)
+    for max_memory in (None, lib.current_memory()[0] + 1):
+        c_occ, c_vir = corr.active_orbitals(pt)
+        e_occ, e_vir = corr.partition_doubles(mol, tr, c_occ, c_vir, pt.t2, ref.orth_coeff,
+                                              max_memory=max_memory)
+        assert numpy.allclose(e_occ, ref.e_corr_occ, atol=1e-12)
+        assert numpy.allclose(e_vir, ref.e_corr_vir, atol=1e-12)
+    res_t = eda_ccsd_t.triples_by_atom(mycc, max_memory=lib.current_memory()[0] + 0.05)
+    for name in ('occ', 'vir'):
+        assert numpy.allclose(res_t[name][0], ref_t[name][0], atol=1e-12)
