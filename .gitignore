@@ -6,3 +6,7 @@ dist/
 .pytest_cache/
 *.chk
 *.log
+*.so
+*.dylib
+*.pyd
+build/

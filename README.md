@@ -33,9 +33,19 @@ PySCF 上でエネルギー密度解析 (Energy Density Analysis, EDA) を行い
 ## インストール
 
 ```bash
-pip install -e .          # 開発用インストール
+pip install -e .          # 開発用インストール (C コンパイラがあれば (T) 分割カーネルもビルド)
 pip install -e .[test]    # テストも実行する場合
 pytest
+```
+
+依存パッケージは numpy, scipy, pyscf (>= 2.0), threadpoolctl です。CCSD(T)-EDA の (T) 分割は
+`pyscf_eda/lib/ccsd_t_eda.c` の C (OpenMP) カーネルを使います。`pip install` 時に gcc などの
+C コンパイラが見つかればビルドされ，見つからなければ純 numpy 実装 (同じ結果，低速) に
+自動的にフォールバックします。カーネルが使えているかは次で確認できます。
+
+```python
+from pyscf_eda import lib
+print(lib.load() is not None, lib.num_threads())   # True, OpenMP スレッド数
 ```
 
 ## 使い方
@@ -338,10 +348,21 @@ $O(o^3v^2)$ (仮想ブロックごと) と $O(o\,v^3)$ ($P$ と $(be|ck)$) で�
 `max_memory` に応じて分割するので，大きな分子でもメモリは $O(o^3 v\,n_b)$ に抑えられます。
 $W$ の 12 項は転置済みの振幅・積分との行列積として組み立て，末尾の添字 ($c$ または $b,c$) が
 連続になる形で累積します。`with_t4=False` (CBS ドライバの既定) では $E_T[4]$ と $E_{ST}[5]$ への
-分解を省略し，(T) 分割の時間を約 2 割節約します。ブタン/cc-pVDZ (14 原子，4 スレッド) では
-原子ごとに $R^A$ を作る旧実装の 707 秒に対し，新実装は 154 秒 (`with_t4=True`)，128 秒
-(`with_t4=False`) で，PySCF の (T) エネルギー (8 秒) の 15〜20 倍です。numpy の 5 添字配列の
-転置・累積がメモリ帯域で律速されており，これ以上の高速化には C 実装が必要です。
+分解を省略します。
+
+$P$, $Q$ の計算には C (OpenMP) で書いたカーネル `pyscf_eda/lib/ccsd_t_eda.c` を使います
+(`backend='auto'` 既定。`backend='numpy'` で純 numpy 実装)。PySCF の (T) と同じく仮想軌道の
+ブロック $a \ge b \ge c$ ごとに $W$, $Z$, $Y$ を組み立て，その場で $P$, $Q$ へ逆縮約します。
+行列積は SciPy が公開する BLAS の `dgemm` を関数ポインタで呼び (なければ C のループ)，
+ブロックはスレッドに動的に分配して，共有の $P$, $Q$ は行ごとのロックで更新します。
+メモリはスレッドあたり $O(o^3 n_c)$ で，原子数にも仮想軌道数にも依存しません。
+カーネルは `pip install` 時にコンパイルされ (C コンパイラがなければ numpy 実装に自動的に
+フォールバック)，ソース配布のまま使う場合は初回利用時に `cc` で自動コンパイルを試みます。
+OpenMP スレッド内で BLAS が多重にスレッドを立てないよう，`threadpoolctl` で BLAS を
+1 スレッドに制限します (`threadpoolctl` は依存パッケージに含めています)。
+ブタン/cc-pVDZ (14 原子，4 スレッド) での (T) 分割の時間は，原子ごとに $R^A$ を作る旧実装の
+707 秒，numpy 版の 154 秒 / 128 秒 (`with_t4` True / False) に対し，C カーネルでは 17 秒 / 12 秒で，
+PySCF の (T) エネルギー本体 (7 秒) の 2 倍前後です。
 論文の renormalized CCSD(T) (R-CCSD(T)) は未実装です。
 
 ## CBS 極限の原子エネルギー (QDD / QTD)

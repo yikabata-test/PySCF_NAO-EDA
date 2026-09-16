@@ -190,3 +190,20 @@ def test_blocked_and_total_only_partitions(h2o_ccsd):
     res = eda_ccsd_t.EDA(mycc, with_t4=False).kernel()
     assert res.e_t4 is None and res.e_st5 is None
     assert numpy.allclose(res.e_t, eda_ccsd_t.EDA(mycc).kernel().e_t, atol=1e-12)
+
+
+def test_c_kernel_matches_numpy(h2o_ccsd):
+    from pyscf_eda import lib as eda_lib
+    if eda_lib.load() is None:
+        pytest.skip('compiled (T) partition kernel not available')
+    mycc = h2o_ccsd
+    x = eda_ccsd.nao_eda(mycc).orth_coeff
+    ref = eda_ccsd_t.triples_by_atom(mycc, x=x, backend='numpy')
+    for kw in (dict(), dict(with_t4=False), dict(max_memory=lib.current_memory()[0] + 0.05)):
+        res = eda_ccsd_t.triples_by_atom(mycc, x=x, backend='c', **kw)
+        for name in ('occ', 'vir'):
+            assert numpy.allclose(res[name][0], ref[name][0], atol=1e-12)
+            if kw.get('with_t4', True):
+                assert numpy.allclose(res[name][1], ref[name][1], atol=1e-12)
+    with pytest.raises(ValueError):
+        eda_ccsd_t.triples_by_atom(mycc, backend='fortran')

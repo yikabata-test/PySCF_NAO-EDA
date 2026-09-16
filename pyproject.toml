@@ -11,7 +11,9 @@ requires-python = ">=3.9"
 license = {text = "MIT"}
 dependencies = [
     "numpy",
+    "scipy",
     "pyscf>=2.0",
+    "threadpoolctl",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +21,9 @@ test = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["pyscf_eda*"]
+
+[tool.setuptools.package-data]
+"pyscf_eda.lib" = ["*.c"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

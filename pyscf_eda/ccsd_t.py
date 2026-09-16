@@ -70,9 +70,13 @@ O(o v^3 N) for the final contractions, independent of the number of atoms.
 The W blocks are built for one virtual index a and a block of b at a time
 (memory O(o^3 v n_b), n_b from ``max_memory``); P and the (be|ck) integrals
 take O(o v^3), and the (be|cl) integrals are generated in blocks of b.
-In numpy the block assembly is memory-bandwidth bound: for butane/cc-pVDZ
-the partition takes about 15 times the (T) energy evaluation of PySCF's
-C kernel (with_t4=False), independent of the number of atoms.
+P and Q are computed by the OpenMP C kernel ``pyscf_eda/lib/ccsd_t_eda.c``
+(blocks a >= b >= c as in PySCF's (T) code, BLAS dgemm through SciPy,
+per-row locks on P and Q; memory O(o^3 n_c) per thread) or, if it cannot be
+compiled, by the numpy implementation of the same block scheme.  For
+butane/cc-pVDZ the C kernel takes about twice the (T) energy evaluation of
+PySCF (the numpy version about 15-20 times), independent of the number of
+atoms.
 
 The renormalized R-CCSD(T) variants of the paper are not implemented.
 """
@@ -246,56 +250,11 @@ def _w_block(t2, g, h, a, b0=None, b1=None, ops=None, opa=None, out=None):
     return w
 
 
-def triples_by_atom(mycc, x=None, t1=None, t2=None, mo_energy=None, verbose=None,
-                    max_memory=None, with_t4=True):
-    """Atomic partitions of the (T) correction.
-
-    Parameters
-    ----------
-    with_t4 : bool
-        Also split every atomic (T) energy into E_T[4]^A and E_ST[5]^A
-        (default True; costs about 20 % more).
-
-    Returns
-    -------
-    dict with keys 'occ' and 'vir' (U^{0,0} and U^{2,2} partitions); each
-    value is a tuple (e_t, e_t4) of arrays (natm,) with the total (T)
-    correction and its fourth-order part (None if ``with_t4`` is False).
-    """
-    log = logger.new_logger(mycc, verbose)
-    mol = mycc.mol
-    if t1 is None:
-        t1 = mycc.t1
-    if t2 is None:
-        t2 = mycc.t2
-    if t1 is None or t2 is None:
-        raise RuntimeError('CCSD amplitudes are not available; run the CCSD first')
-    t1 = numpy.asarray(t1)
-    t2 = numpy.ascontiguousarray(t2)
-    c_occ, c_vir = corr.active_orbitals(mycc)
-    nocc = c_occ.shape[1]
-    nvir = c_vir.shape[1]
-    if mo_energy is None:
-        mo_energy = numpy.asarray(mycc._scf.mo_energy)[mycc.get_frozen_mask()]
-    e_occ, e_vir = mo_energy[:nocc], mo_energy[nocc:]
-
-    nao = mol.nao_nr()
-    if x is None:
-        x = numpy.eye(nao)
-    xinv = numpy.linalg.inv(x)
-    cp_occ = xinv.dot(c_occ)
-    cp_vir = xinv.dot(c_vir)
-    transform = corr.eri_transformer(mycc)
-    if max_memory is None:
-        max_memory = mycc.max_memory
-
-    ovov = transform((c_occ, c_vir, c_occ, c_vir)).reshape(nocc, nvir, nocc, nvir)
-    g_tot = transform((c_vir, c_vir, c_vir, c_occ)).reshape(nvir, nvir, nvir, nocc)   # (be|ck)
-    h_tot = transform((c_occ, c_occ, c_vir, c_occ)).reshape(nocc, nocc, nvir, nocc)   # (mj|ck)
+def _pq_intermediates_numpy(t1, t2, g_tot, h_tot, ovov, e_occ, e_vir, with_t4, max_memory, log):
+    """P and Q intermediates with the numpy implementation (blocked over a and b)."""
+    nocc, nvir = t1.shape
     ops = _TriplesOperands(t2, g_tot, h_tot)
     ov_kc = numpy.ascontiguousarray(ovov.transpose(0, 2, 1, 3))         # [j, k, b, c] = (jb|kc)
-
-    # --- atom-independent part: P_beck and Q_mjck for Y = 2 r3(W + Z)/D (and 2 r3(W)/D)
     eijk = lib.direct_sum('i+j+k->ijk', e_occ, e_occ, e_occ)
     ebc = lib.direct_sum('b+c->bc', e_vir, e_vir)
     keys = ('t', '4') if with_t4 else ('t',)
@@ -339,7 +298,138 @@ def triples_by_atom(mycc, x=None, t1=None, t2=None, mo_energy=None, verbose=None
                 q[key] += qm.reshape(nocc, nocc, nvir, nocc).transpose(3, 0, 2, 1)
             blocks = y = y4 = z = y_ib = None
         log.debug1('(T) partition: virtual block %d/%d done', a + 1, nvir)
-    ops = None
+    return p, q
+
+
+def _pq_intermediates_c(lib_c, t1, t2, g_tot, h_tot, ovov, e_occ, e_vir, with_t4,
+                        max_memory, log):
+    """P and Q intermediates from the compiled kernel (None if unavailable)."""
+    import ctypes
+    from pyscf_eda import lib as eda_lib
+    nocc, nvir = t1.shape
+    t1 = numpy.ascontiguousarray(t1, dtype=numpy.float64)
+    t2 = numpy.ascontiguousarray(t2, dtype=numpy.float64)
+    t2c = numpy.ascontiguousarray(t2.transpose(2, 0, 1, 3))        # [c][k][i][e] = t_ki^ce
+    t2ackm = numpy.ascontiguousarray(t2.transpose(3, 2, 0, 1))     # [a][c][k][m] = t_km^ca
+    g = numpy.ascontiguousarray(g_tot, dtype=numpy.float64)        # [b][e][c][k] = (be|ck)
+    hT = numpy.ascontiguousarray(h_tot.transpose(0, 2, 1, 3))      # [m][c][j][k] = (mj|ck)
+    hB = numpy.ascontiguousarray(h_tot.transpose(2, 0, 1, 3))      # [b][m][k][j] = (mk|bj)
+    ovov = numpy.ascontiguousarray(ovov, dtype=numpy.float64)
+    e_occ = numpy.ascontiguousarray(e_occ, dtype=numpy.float64)
+    e_vir = numpy.ascontiguousarray(e_vir, dtype=numpy.float64)
+    p = numpy.zeros((nvir, nvir, nvir, nocc))
+    q = numpy.zeros((nocc, nocc, nvir, nocc))
+    p4 = numpy.zeros((nvir, nvir, nvir, nocc)) if with_t4 else None
+    q4 = numpy.zeros((nocc, nocc, nvir, nocc)) if with_t4 else None
+    # block size in c: per thread 5-6 arrays of nc*o^3 doubles
+    nthreads = eda_lib.num_threads()
+    per_c_mb = nocc ** 3 * 8 / 1e6 * (6 if with_t4 else 5) * nthreads
+    avail = max_memory - lib.current_memory()[0]
+    nc_max = int(max(1, min(nvir, avail // max(per_c_mb, 1e-6))))
+    nc_max = min(nc_max, 64)
+    dgemm = eda_lib.dgemm_pointer()
+    log.debug('(T) partition (C kernel): %d threads, c-block %d, BLAS dgemm %s',
+              nthreads, nc_max, 'yes' if dgemm else 'no (C loops)')
+    ptr = lambda arr: arr.ctypes.data_as(ctypes.c_void_p)
+    null = ctypes.c_void_p()
+
+    def run():
+        return lib_c.ccsd_t_eda_partition(
+            ctypes.c_int(nocc), ctypes.c_int(nvir), ctypes.c_int(int(with_t4)), ctypes.c_int(nc_max),
+            ptr(e_occ), ptr(e_vir), ptr(t1), ptr(t2), ptr(t2c), ptr(t2ackm), ptr(g), ptr(hT), ptr(hB),
+            ptr(ovov), ptr(p), ptr(q), ptr(p4) if with_t4 else null, ptr(q4) if with_t4 else null,
+            ctypes.c_void_p(dgemm) if dgemm else null)
+
+    if dgemm and nthreads > 1:
+        try:
+            from threadpoolctl import threadpool_limits
+        except ImportError:
+            threadpool_limits = None
+            log.warn('threadpoolctl is not installed: BLAS threads are not limited inside the '
+                     'OpenMP kernel; install threadpoolctl to avoid oversubscription')
+        if threadpool_limits is not None:
+            with threadpool_limits(limits=1, user_api='blas'):
+                err = run()
+        else:
+            err = run()
+    else:
+        err = run()
+    if err != 0:
+        raise MemoryError('ccsd_t_eda_partition failed to allocate its buffers')
+    out = {'t': (p, q)}
+    if with_t4:
+        out['4'] = (p4, q4)
+    return out
+
+
+def triples_by_atom(mycc, x=None, t1=None, t2=None, mo_energy=None, verbose=None,
+                    max_memory=None, with_t4=True, backend='auto'):
+    """Atomic partitions of the (T) correction.
+
+    Parameters
+    ----------
+    with_t4 : bool
+        Also split every atomic (T) energy into E_T[4]^A and E_ST[5]^A
+        (default True; costs about 20 % more).
+    backend : {'auto', 'c', 'numpy'}
+        'c' uses the compiled OpenMP kernel (``pyscf_eda/lib``), 'numpy'
+        the pure numpy implementation; 'auto' takes the kernel when it can
+        be loaded (or compiled) and falls back to numpy otherwise.
+
+    Returns
+    -------
+    dict with keys 'occ' and 'vir' (U^{0,0} and U^{2,2} partitions); each
+    value is a tuple (e_t, e_t4) of arrays (natm,) with the total (T)
+    correction and its fourth-order part (None if ``with_t4`` is False).
+    """
+    log = logger.new_logger(mycc, verbose)
+    mol = mycc.mol
+    if t1 is None:
+        t1 = mycc.t1
+    if t2 is None:
+        t2 = mycc.t2
+    if t1 is None or t2 is None:
+        raise RuntimeError('CCSD amplitudes are not available; run the CCSD first')
+    t1 = numpy.asarray(t1)
+    t2 = numpy.ascontiguousarray(t2)
+    c_occ, c_vir = corr.active_orbitals(mycc)
+    nocc = c_occ.shape[1]
+    nvir = c_vir.shape[1]
+    if mo_energy is None:
+        mo_energy = numpy.asarray(mycc._scf.mo_energy)[mycc.get_frozen_mask()]
+    e_occ, e_vir = mo_energy[:nocc], mo_energy[nocc:]
+
+    nao = mol.nao_nr()
+    if x is None:
+        x = numpy.eye(nao)
+    xinv = numpy.linalg.inv(x)
+    cp_occ = xinv.dot(c_occ)
+    cp_vir = xinv.dot(c_vir)
+    transform = corr.eri_transformer(mycc)
+    if max_memory is None:
+        max_memory = mycc.max_memory
+
+    ovov = transform((c_occ, c_vir, c_occ, c_vir)).reshape(nocc, nvir, nocc, nvir)
+    g_tot = transform((c_vir, c_vir, c_vir, c_occ)).reshape(nvir, nvir, nvir, nocc)   # (be|ck)
+    h_tot = transform((c_occ, c_occ, c_vir, c_occ)).reshape(nocc, nocc, nvir, nocc)   # (mj|ck)
+
+    lib_c = None
+    if backend in ('auto', 'c'):
+        from pyscf_eda import lib as eda_lib
+        lib_c = eda_lib.load()
+        if lib_c is None and backend == 'c':
+            raise RuntimeError('the compiled (T) partition kernel is not available')
+    elif backend != 'numpy':
+        raise ValueError("backend must be 'auto', 'c' or 'numpy'")
+    keys = ('t', '4') if with_t4 else ('t',)
+    if lib_c is not None:
+        pq = _pq_intermediates_c(lib_c, t1, t2, g_tot, h_tot, ovov, e_occ, e_vir, with_t4,
+                                 max_memory, log)
+        p = {k: pq[k][0] for k in keys}
+        q = {k: pq[k][1] for k in keys}
+    else:
+        p, q = _pq_intermediates_numpy(t1, t2, g_tot, h_tot, ovov, e_occ, e_vir, with_t4,
+                                       max_memory, log)
 
     # --- contractions with the integrals carrying the one-centre index l
     def blocks_of(n, per_unit_mb):
